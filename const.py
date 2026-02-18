@@ -34,6 +34,10 @@ ATTR_PAIR_3_LENGTH = "pair_3_length"
 ATTR_PAIR_4_STATUS = "pair_4_status"
 ATTR_PAIR_4_LENGTH = "pair_4_length"
 ATTR_LAST_TESTED = "last_tested"
+ATTR_PORT_CONNECTED = "port_connected"
+ATTR_PORT_SPEED = "port_speed"
+ATTR_PORT_SPEED_MBPS = "port_speed_mbps"
+ATTR_PORT_TYPE = "port_type"
 
 # Cable statuses
 STATUS_OK = "OK"

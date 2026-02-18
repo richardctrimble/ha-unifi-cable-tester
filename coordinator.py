@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import CABLE_TEST_WAIT, DOMAIN
 from .ssh_client import (
     CableTestResult,
+    PortStatus,
     SwitchInfo,
     UniFiAuthError,
     UniFiCommandError,
@@ -47,6 +48,7 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
         self.client = client
         self.port_count: int = 0
         self.switch_info: SwitchInfo = SwitchInfo()
+        self.port_statuses: dict[int, PortStatus] = {}
         self._test_lock = asyncio.Lock()
 
     async def async_setup(self) -> None:
@@ -55,6 +57,7 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
             await self.client.connect()
             self.port_count = await self.client.get_port_count()
             self.switch_info = await self.client.get_switch_info()
+            self.port_statuses = await self.client.get_port_statuses()
             _LOGGER.info(
                 "Connected to %s (%s) with %d ports",
                 self.switch_info.hostname,
@@ -95,8 +98,21 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                 # Wait for the switch to complete the test
                 await asyncio.sleep(CABLE_TEST_WAIT)
 
-                # Fetch results
-                results = await self.client.get_cable_test_results()
+                # Fetch results (with retries for slower firmware)
+                results: dict[int, CableTestResult] = {}
+                for attempt in range(1, 5):
+                    results = await self.client.get_cable_test_results()
+                    if results and (port is None or port in results):
+                        break
+                    _LOGGER.debug(
+                        "Cable test results not ready yet (attempt %d/4)",
+                        attempt,
+                    )
+                    if attempt < 4:
+                        await asyncio.sleep(3)
+
+                # Refresh link/speed/type details
+                self.port_statuses = await self.client.get_port_statuses()
 
                 # Merge with existing data (in case we only tested one port)
                 merged = dict(self.data or {})

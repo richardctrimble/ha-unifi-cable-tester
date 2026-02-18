@@ -15,6 +15,10 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     ATTR_LAST_TESTED,
+    ATTR_PORT_CONNECTED,
+    ATTR_PORT_SPEED,
+    ATTR_PORT_SPEED_MBPS,
+    ATTR_PORT_TYPE,
     ATTR_PAIR_1_LENGTH,
     ATTR_PAIR_1_STATUS,
     ATTR_PAIR_2_LENGTH,
@@ -75,8 +79,12 @@ class UniFiCableTestSensor(
     @property
     def device_info(self) -> DeviceInfo:
         """Return device info to link this entity to the switch device."""
+        identifiers = {(DOMAIN, self.coordinator.config_entry.entry_id)}
+        if self.coordinator.switch_info.mac:
+            identifiers.add((DOMAIN, self.coordinator.switch_info.mac.lower()))
+
         return DeviceInfo(
-            identifiers={(DOMAIN, self.coordinator.config_entry.entry_id)},
+            identifiers=identifiers,
             name=self.coordinator.switch_info.hostname,
             manufacturer="Ubiquiti",
             model=self.coordinator.switch_info.model,
@@ -110,11 +118,21 @@ class UniFiCableTestSensor(
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return per-pair cable test details as attributes."""
+        attrs: dict[str, Any] = {}
+
+        port_status = self.coordinator.port_statuses.get(self._port)
+        if port_status is not None:
+            attrs[ATTR_PORT_CONNECTED] = port_status.connected
+            attrs[ATTR_PORT_SPEED] = port_status.speed_display
+            attrs[ATTR_PORT_SPEED_MBPS] = port_status.speed_mbps
+            attrs[ATTR_PORT_TYPE] = port_status.port_type
+
         if not self.coordinator.data or self._port not in self.coordinator.data:
-            return {}
+            return attrs
 
         result = self.coordinator.data[self._port]
-        return {
+        attrs.update(
+            {
             ATTR_PAIR_1_STATUS: result.pair_1_status,
             ATTR_PAIR_1_LENGTH: result.pair_1_length,
             ATTR_PAIR_2_STATUS: result.pair_2_status,
@@ -124,4 +142,6 @@ class UniFiCableTestSensor(
             ATTR_PAIR_4_STATUS: result.pair_4_status,
             ATTR_PAIR_4_LENGTH: result.pair_4_length,
             ATTR_LAST_TESTED: result.last_tested.isoformat(),
-        }
+            }
+        )
+        return attrs

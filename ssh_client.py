@@ -52,6 +52,17 @@ class SwitchInfo:
     mac: str | None = None
 
 
+@dataclass
+class PortStatus:
+    """Current link status details for a switch port."""
+
+    port: int
+    connected: bool | None = None
+    speed_mbps: int | None = None
+    speed_display: str | None = None
+    port_type: str | None = None
+
+
 class UniFiSSHError(Exception):
     """Base exception for UniFi SSH errors."""
 
@@ -193,6 +204,11 @@ class UniFiSSHClient:
 
         return info
 
+    async def get_port_statuses(self) -> dict[int, PortStatus]:
+        """Fetch and parse port link status details."""
+        output = await self.run_command(CMD_PORT_SHOW)
+        return self._parse_port_statuses(output)
+
     async def run_cable_test(self, port: int | None = None) -> None:
         """Run cable test on a specific port or all ports."""
         if port is not None:
@@ -228,27 +244,130 @@ class UniFiSSHClient:
     def _parse_switch_info(output: str) -> SwitchInfo:
         """Parse info command output for switch details."""
         info = SwitchInfo()
+
+        def _value_after_delim(text: str) -> str | None:
+            for delim in (":", "="):
+                if delim in text:
+                    return text.split(delim, 1)[1].strip()
+            return None
+
         for line in output.strip().splitlines():
             line = line.strip()
+            if not line:
+                continue
+
             lower = line.lower()
-            if "hostname" in lower:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    info.hostname = parts[1].strip()
-            elif "model" in lower:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    info.model = parts[1].strip()
+            value = _value_after_delim(line)
+
+            if any(k in lower for k in ("hostname", "host name", "system name", "device name")):
+                if value:
+                    info.hostname = value
+            elif any(k in lower for k in ("model", "board name", "product")):
+                if value:
+                    info.model = value
             elif "version" in lower or "firmware" in lower:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    info.version = parts[1].strip()
+                if value:
+                    info.version = value
             elif "mac" in lower:
-                parts = line.split(":", 1)
-                if len(parts) == 2:
-                    # Rejoin after first colon since MAC addresses contain colons
-                    info.mac = parts[1].strip()
+                mac_match = re.search(
+                    r"([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}",
+                    line,
+                )
+                if mac_match:
+                    info.mac = mac_match.group(0)
+                elif value:
+                    # Rejoin after first delimiter for uncommon formats
+                    info.mac = value
+
         return info
+
+    @staticmethod
+    def _parse_port_statuses(output: str) -> dict[int, PortStatus]:
+        """Parse swctrl port show output into per-port status details."""
+        statuses: dict[int, PortStatus] = {}
+
+        for line in output.strip().splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+
+            match = re.match(r"^(\d+)\s+(.*)", raw)
+            if not match:
+                continue
+
+            port = int(match.group(1))
+            details = match.group(2)
+            lower = details.lower()
+
+            connected: bool | None = None
+            if any(
+                marker in lower
+                for marker in (
+                    "notconnect",
+                    "not connected",
+                    "disconnected",
+                    "link down",
+                    " down",
+                    "disabled",
+                    "no-link",
+                    "nolink",
+                )
+            ):
+                connected = False
+            elif any(
+                marker in lower
+                for marker in (
+                    "connected",
+                    "link up",
+                    " up",
+                    "active",
+                )
+            ):
+                connected = True
+
+            speed_mbps: int | None = None
+            speed_display: str | None = None
+
+            speed_with_unit = re.search(
+                r"\b(\d+(?:\.\d+)?)\s*(g(?:bps)?|m(?:bps)?)\b",
+                lower,
+            )
+            if speed_with_unit:
+                value = float(speed_with_unit.group(1))
+                unit = speed_with_unit.group(2)
+                if unit.startswith("g"):
+                    speed_mbps = int(value * 1000)
+                else:
+                    speed_mbps = int(value)
+            else:
+                speed_plain = re.search(
+                    r"\b(10|100|1000|2500|5000|10000)\b",
+                    lower,
+                )
+                if speed_plain:
+                    speed_mbps = int(speed_plain.group(1))
+
+            if speed_mbps is not None:
+                if speed_mbps >= 1000 and speed_mbps % 1000 == 0:
+                    speed_display = f"{speed_mbps // 1000} Gbps"
+                else:
+                    speed_display = f"{speed_mbps} Mbps"
+
+            port_type: str | None = None
+            if any(k in lower for k in ("sfp", "sfp+", "sfp28", "fiber", "fibre")):
+                port_type = "fiber"
+            elif any(k in lower for k in ("rj45", "base-t", "copper", "ethernet")):
+                port_type = "copper"
+
+            statuses[port] = PortStatus(
+                port=port,
+                connected=connected,
+                speed_mbps=speed_mbps,
+                speed_display=speed_display,
+                port_type=port_type,
+            )
+
+        return statuses
 
     @staticmethod
     def _parse_cable_test_output(output: str) -> dict[int, CableTestResult]:
@@ -270,7 +389,7 @@ class UniFiSSHClient:
         if not lines:
             return results
 
-        # Strategy: find data lines that start with a port number
+        # Strategy 1: find single-line rows that start with a port number
         # and extract status/length pairs
         for line in lines:
             line = line.strip()
@@ -278,7 +397,14 @@ class UniFiSSHClient:
                 continue
 
             # Skip header and separator lines
-            if line.startswith(("-", "=", "Port")) or "Status" in line or "Length" in line:
+            lower = line.lower()
+            if line.startswith(("-", "=")):
+                continue
+            if (
+                lower.startswith("port")
+                and "pair" in lower
+                and "status" in lower
+            ):
                 continue
 
             # Try to parse a data row starting with port number
@@ -310,6 +436,77 @@ class UniFiSSHClient:
 
             results[port_num] = result
 
+        # Strategy 2: multiline formats, e.g.:
+        # Port 1
+        # Pair A: OK 12m
+        # Pair B: Open 4m
+        if not results:
+            current_port: int | None = None
+            by_port: dict[int, CableTestResult] = {}
+
+            for raw in lines:
+                line = raw.strip()
+                if not line:
+                    continue
+
+                lower = line.lower()
+
+                port_header = re.search(r"\bport\s*(\d+)\b", lower)
+                if port_header:
+                    current_port = int(port_header.group(1))
+                    by_port.setdefault(
+                        current_port,
+                        CableTestResult(port=current_port, last_tested=now),
+                    )
+                    continue
+
+                bare_port = re.match(r"^(\d+)\s*$", lower)
+                if bare_port:
+                    current_port = int(bare_port.group(1))
+                    by_port.setdefault(
+                        current_port,
+                        CableTestResult(port=current_port, last_tested=now),
+                    )
+                    continue
+
+                if current_port is None:
+                    continue
+
+                pair_label_match = re.search(r"pair\s*([abcd1-4])", lower)
+                pairs = _extract_pairs(line)
+                if not pairs:
+                    continue
+
+                result = by_port[current_port]
+                if pair_label_match:
+                    pair_label = pair_label_match.group(1)
+                    pair_index = {
+                        "a": 1,
+                        "b": 2,
+                        "c": 3,
+                        "d": 4,
+                        "1": 1,
+                        "2": 2,
+                        "3": 3,
+                        "4": 4,
+                    }.get(pair_label)
+                    if pair_index is not None:
+                        _set_pair_result(result, pair_index, pairs[0][0], pairs[0][1])
+                        continue
+
+                # Fallback: append in first available slot when no explicit pair label
+                for status, length in pairs:
+                    if result.pair_1_status == STATUS_NOT_TESTED:
+                        _set_pair_result(result, 1, status, length)
+                    elif result.pair_2_status == STATUS_NOT_TESTED:
+                        _set_pair_result(result, 2, status, length)
+                    elif result.pair_3_status == STATUS_NOT_TESTED:
+                        _set_pair_result(result, 3, status, length)
+                    elif result.pair_4_status == STATUS_NOT_TESTED:
+                        _set_pair_result(result, 4, status, length)
+
+            results = by_port
+
         if not results:
             _LOGGER.warning("Could not parse any cable test results from: %s", output)
 
@@ -321,13 +518,34 @@ def _normalize_status(status: str) -> str:
     status = status.strip().lower()
     if status in ("ok", "normal", "good"):
         return STATUS_OK
-    if status in ("open", "disconnect"):
+    if status in ("open", "disconnect", "disconnected"):
         return STATUS_OPEN
     if status in ("short",):
         return STATUS_SHORT
     if status in ("n/a", "na", "-", ""):
         return STATUS_NOT_TESTED
     return STATUS_UNKNOWN
+
+
+def _set_pair_result(
+    result: CableTestResult,
+    pair_index: int,
+    status: str,
+    length: float | None,
+) -> None:
+    """Set result values for a specific cable pair index."""
+    if pair_index == 1:
+        result.pair_1_status = status
+        result.pair_1_length = length
+    elif pair_index == 2:
+        result.pair_2_status = status
+        result.pair_2_length = length
+    elif pair_index == 3:
+        result.pair_3_status = status
+        result.pair_3_length = length
+    elif pair_index == 4:
+        result.pair_4_status = status
+        result.pair_4_length = length
 
 
 def _parse_length(length_str: str) -> float | None:
