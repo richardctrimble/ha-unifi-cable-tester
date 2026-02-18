@@ -45,6 +45,7 @@ STATUS_OK = "OK"
 STATUS_OPEN = "Open"
 STATUS_SHORT = "Short"
 STATUS_NOT_TESTED = "Not Tested"
+STATUS_TEST_FAILED = "Test Failed"
 STATUS_UNKNOWN = "Unknown"
 
 # Platforms

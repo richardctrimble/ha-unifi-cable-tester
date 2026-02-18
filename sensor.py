@@ -33,6 +33,7 @@ from .const import (
     STATUS_OK,
     STATUS_OPEN,
     STATUS_SHORT,
+    STATUS_TEST_FAILED,
     STATUS_UNKNOWN,
 )
 from .coordinator import UniFiCableTesterCoordinator
@@ -100,6 +101,8 @@ class UniFiCableTestSensor(
     @property
     def native_value(self) -> str:
         """Return the overall cable status for this port."""
+        if self._port in self.coordinator.test_failed_ports:
+            return STATUS_TEST_FAILED
         if not self.coordinator.data or self._port not in self.coordinator.data:
             return STATUS_NOT_TESTED
 

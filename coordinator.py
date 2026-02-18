@@ -49,6 +49,7 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
         self.port_count: int = 0
         self.switch_info: SwitchInfo = SwitchInfo()
         self.port_statuses: dict[int, PortStatus] = {}
+        self.test_failed_ports: set[int] = set()
         self._test_lock = asyncio.Lock()
 
     async def async_setup(self, startup_lightweight_read: bool = False) -> None:
@@ -147,6 +148,23 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                 merged = dict(self.data or {})
                 merged.update(results)
 
+                # Clear any previous failures for tested ports
+                tested_ports = (
+                    {port} if port is not None
+                    else set(range(1, self.port_count + 1))
+                )
+                self.test_failed_ports -= tested_ports
+
+                # If we got no results at all, treat as a failure
+                if not results:
+                    _LOGGER.warning(
+                        "Cable test returned no results for %s",
+                        f"port {port}" if port else "all ports",
+                    )
+                    self.test_failed_ports |= tested_ports
+                    self.async_set_updated_data(dict(self.data or {}))
+                    raise UpdateFailed("Cable test returned no results")
+
                 # Push updated data to all entities
                 self.async_set_updated_data(merged)
 
@@ -156,9 +174,15 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                     len(results),
                 )
 
-            except UniFiConnectionError as err:
-                _LOGGER.error("Connection lost during cable test: %s", err)
-                raise UpdateFailed(f"Connection lost: {err}") from err
-            except UniFiCommandError as err:
-                _LOGGER.error("Cable test command failed: %s", err)
+            except UpdateFailed:
+                raise
+            except (UniFiConnectionError, UniFiCommandError, Exception) as err:
+                # Mark the tested port(s) as failed and notify entities
+                failed_ports = (
+                    {port} if port is not None
+                    else set(range(1, self.port_count + 1))
+                )
+                self.test_failed_ports |= failed_ports
+                self.async_set_updated_data(dict(self.data or {}))
+                _LOGGER.error("Cable test failed: %s", err)
                 raise UpdateFailed(f"Cable test failed: {err}") from err
