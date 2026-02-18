@@ -1,0 +1,13 @@
+{
+  "domain": "unifi_cable_tester",
+  "name": "UniFi Cable Tester",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/richardctrimble/unifi_cable_tester",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "requirements": ["asyncssh>=2.14.0"],
+  "version": "1.0.0",
+  "brand": "ubiquiti"
+}

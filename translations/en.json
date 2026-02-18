@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "UniFi Switch Connection",
+        "description": "Enter your UniFi switch connection details.",
+        "data": {
+          "host": "IP Address or Hostname",
+          "port": "SSH Port",
+          "auth_method": "Authentication Method"
+        }
+      },
+      "auth_password": {
+        "title": "Password Authentication",
+        "description": "Enter your SSH credentials.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "auth_key": {
+        "title": "SSH Key Authentication",
+        "description": "Enter your SSH key details.",
+        "data": {
+          "username": "Username",
+          "ssh_key_path": "SSH Private Key Path",
+          "ssh_key_passphrase": "Key Passphrase (optional)"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure UniFi Switch",
+        "description": "Update your switch connection details.",
+        "data": {
+          "host": "IP Address or Hostname",
+          "port": "SSH Port",
+          "auth_method": "Authentication Method"
+        }
+      },
+      "reconfigure_auth_password": {
+        "title": "Update Password",
+        "description": "Enter your updated SSH credentials.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "reconfigure_auth_key": {
+        "title": "Update SSH Key",
+        "description": "Enter your updated SSH key details.",
+        "data": {
+          "username": "Username",
+          "ssh_key_path": "SSH Private Key Path",
+          "ssh_key_passphrase": "Key Passphrase (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to switch. Check the IP address and port.",
+      "invalid_auth": "Invalid authentication credentials.",
+      "invalid_key_path": "SSH key file not found at the specified path.",
+      "not_unifi_switch": "The device does not appear to be a UniFi switch.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This switch is already configured."
+    }
+  }
+}

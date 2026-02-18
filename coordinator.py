@@ -1,0 +1,119 @@
+"""DataUpdateCoordinator for UniFi Cable Tester."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .const import CABLE_TEST_WAIT, DOMAIN
+from .ssh_client import (
+    CableTestResult,
+    SwitchInfo,
+    UniFiAuthError,
+    UniFiCommandError,
+    UniFiConnectionError,
+    UniFiSSHClient,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResult]]):
+    """Coordinator for UniFi cable test data.
+
+    This coordinator does NOT poll automatically. Data is only updated
+    when a cable test is explicitly triggered via button press.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        client: UniFiSSHClient,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_{entry.entry_id}",
+            # No update_interval — on-demand only
+        )
+        self.config_entry = entry
+        self.client = client
+        self.port_count: int = 0
+        self.switch_info: SwitchInfo = SwitchInfo()
+        self._test_lock = asyncio.Lock()
+
+    async def async_setup(self) -> None:
+        """Connect to the switch and discover ports."""
+        try:
+            await self.client.connect()
+            self.port_count = await self.client.get_port_count()
+            self.switch_info = await self.client.get_switch_info()
+            _LOGGER.info(
+                "Connected to %s (%s) with %d ports",
+                self.switch_info.hostname,
+                self.switch_info.model,
+                self.port_count,
+            )
+        except UniFiAuthError as err:
+            raise ConfigEntryNotReady(
+                f"Authentication failed: {err}"
+            ) from err
+        except UniFiConnectionError as err:
+            raise ConfigEntryNotReady(
+                f"Cannot connect to switch: {err}"
+            ) from err
+
+        # Initialize with empty data (no tests run yet)
+        self.async_set_updated_data({})
+
+    async def async_shutdown(self) -> None:
+        """Disconnect from the switch."""
+        await self.client.disconnect()
+
+    async def _async_update_data(self) -> dict[int, CableTestResult]:
+        """Return current data. Not used for polling."""
+        return self.data or {}
+
+    async def async_request_cable_test(self, port: int | None = None) -> None:
+        """Run a cable test and update results.
+
+        Args:
+            port: Specific port to test, or None for all ports.
+        """
+        async with self._test_lock:
+            try:
+                # Run the cable test
+                await self.client.run_cable_test(port)
+
+                # Wait for the switch to complete the test
+                await asyncio.sleep(CABLE_TEST_WAIT)
+
+                # Fetch results
+                results = await self.client.get_cable_test_results()
+
+                # Merge with existing data (in case we only tested one port)
+                merged = dict(self.data or {})
+                merged.update(results)
+
+                # Push updated data to all entities
+                self.async_set_updated_data(merged)
+
+                _LOGGER.debug(
+                    "Cable test complete for %s, %d port results",
+                    f"port {port}" if port else "all ports",
+                    len(results),
+                )
+
+            except UniFiConnectionError as err:
+                _LOGGER.error("Connection lost during cable test: %s", err)
+                raise UpdateFailed(f"Connection lost: {err}") from err
+            except UniFiCommandError as err:
+                _LOGGER.error("Cable test command failed: %s", err)
+                raise UpdateFailed(f"Cable test failed: {err}") from err
