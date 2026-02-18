@@ -127,11 +127,12 @@ class UniFiCableTestSensor(
         attrs: dict[str, Any] = {}
 
         port_status = self.coordinator.port_statuses.get(self._port)
-        if port_status is not None:
-            attrs[ATTR_PORT_CONNECTED] = port_status.connected
-            attrs[ATTR_PORT_SPEED] = port_status.speed_display
-            attrs[ATTR_PORT_SPEED_MBPS] = port_status.speed_mbps
-            attrs[ATTR_PORT_TYPE] = port_status.port_type
+        # Always include port status keys so they're visible in the attribute panel
+        # even before a "Refresh Switch Status" has been triggered.
+        attrs[ATTR_PORT_CONNECTED] = port_status.connected if port_status else None
+        attrs[ATTR_PORT_SPEED] = port_status.speed_display if port_status else None
+        attrs[ATTR_PORT_SPEED_MBPS] = port_status.speed_mbps if port_status else None
+        attrs[ATTR_PORT_TYPE] = port_status.port_type if port_status else None
 
         if not self.coordinator.data or self._port not in self.coordinator.data:
             return attrs

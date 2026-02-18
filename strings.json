@@ -56,17 +56,6 @@
         }
       }
     },
-    "options": {
-      "step": {
-        "init": {
-          "title": "UniFi Cable Tester Options",
-          "description": "Configure optional startup behavior.",
-          "data": {
-            "startup_lightweight_read": "Lightweight read on startup"
-          }
-        }
-      }
-    },
     "error": {
       "cannot_connect": "Failed to connect to switch. Check the IP address and port.",
       "invalid_auth": "Invalid authentication credentials.",
@@ -76,6 +65,17 @@
     },
     "abort": {
       "already_configured": "This switch is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "UniFi Cable Tester Options",
+        "description": "Configure optional startup behavior.",
+        "data": {
+          "startup_lightweight_read": "Lightweight read on startup"
+        }
+      }
     }
   }
 }

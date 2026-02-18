@@ -46,7 +46,7 @@ class UniFiCableTesterConfigFlow(
         config_entry: config_entries.ConfigEntry,
     ) -> config_entries.OptionsFlow:
         """Return options flow for this config entry."""
-        return UniFiCableTesterOptionsFlow(config_entry)
+        return UniFiCableTesterOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -329,10 +329,6 @@ class UniFiCableTesterConfigFlow(
 
 class UniFiCableTesterOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for UniFi Cable Tester."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
