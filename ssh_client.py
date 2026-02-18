@@ -274,10 +274,17 @@ class UniFiSSHClient:
                     line,
                 )
                 if mac_match:
-                    info.mac = mac_match.group(0)
+                    info.mac = mac_match.group(0).replace("-", ":").lower()
                 elif value:
                     # Rejoin after first delimiter for uncommon formats
-                    info.mac = value
+                    normalized = re.search(
+                        r"([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}",
+                        value,
+                    )
+                    if normalized:
+                        info.mac = normalized.group(0).replace("-", ":").lower()
+                    else:
+                        info.mac = value
 
         return info
 

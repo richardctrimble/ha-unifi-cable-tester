@@ -9,6 +9,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -80,11 +81,16 @@ class UniFiCableTestSensor(
     def device_info(self) -> DeviceInfo:
         """Return device info to link this entity to the switch device."""
         identifiers = {(DOMAIN, self.coordinator.config_entry.entry_id)}
+        connections: set[tuple[str, str]] = set()
+
         if self.coordinator.switch_info.mac:
-            identifiers.add((DOMAIN, self.coordinator.switch_info.mac.lower()))
+            mac = self.coordinator.switch_info.mac.lower()
+            identifiers.add((DOMAIN, mac))
+            connections.add((dr.CONNECTION_NETWORK_MAC, mac))
 
         return DeviceInfo(
             identifiers=identifiers,
+            connections=connections,
             name=self.coordinator.switch_info.hostname,
             manufacturer="Ubiquiti",
             model=self.coordinator.switch_info.model,
