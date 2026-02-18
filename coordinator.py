@@ -51,13 +51,25 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
         self.port_statuses: dict[int, PortStatus] = {}
         self._test_lock = asyncio.Lock()
 
-    async def async_setup(self) -> None:
-        """Connect to the switch and discover ports."""
+    async def async_setup(self, startup_lightweight_read: bool = False) -> None:
+        """Connect to the switch and discover required startup data.
+
+        Args:
+            startup_lightweight_read: If True, also fetch switch info and port
+                status details during startup.
+        """
         try:
             await self.client.connect()
-            self.port_count = await self.client.get_port_count()
-            self.switch_info = await self.client.get_switch_info()
-            self.port_statuses = await self.client.get_port_statuses()
+            if self.port_count <= 0:
+                self.port_count = await self.client.get_port_count()
+            else:
+                _LOGGER.debug(
+                    "Skipping startup port discovery, using known port count: %d",
+                    self.port_count,
+                )
+            if startup_lightweight_read:
+                self.switch_info = await self.client.get_switch_info()
+                self.port_statuses = await self.client.get_port_statuses()
             _LOGGER.info(
                 "Connected to %s (%s) with %d ports",
                 self.switch_info.hostname,
@@ -83,6 +95,23 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
     async def _async_update_data(self) -> dict[int, CableTestResult]:
         """Return current data. Not used for polling."""
         return self.data or {}
+
+    async def async_refresh_switch_status(self) -> None:
+        """Refresh switch identity and port link details on demand.
+
+        This is a lightweight refresh and does not run cable tests.
+        """
+        try:
+            self.switch_info = await self.client.get_switch_info()
+            self.port_statuses = await self.client.get_port_statuses()
+            # Notify entities so attributes/device info refresh immediately.
+            self.async_set_updated_data(dict(self.data or {}))
+        except UniFiConnectionError as err:
+            _LOGGER.error("Connection lost during status refresh: %s", err)
+            raise UpdateFailed(f"Connection lost: {err}") from err
+        except UniFiCommandError as err:
+            _LOGGER.error("Status refresh command failed: %s", err)
+            raise UpdateFailed(f"Status refresh failed: {err}") from err
 
     async def async_request_cable_test(self, port: int | None = None) -> None:
         """Run a cable test and update results.

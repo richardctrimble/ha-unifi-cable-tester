@@ -7,7 +7,8 @@
         "data": {
           "host": "IP Address or Hostname",
           "port": "SSH Port",
-          "auth_method": "Authentication Method"
+          "auth_method": "Authentication Method",
+          "startup_lightweight_read": "Lightweight read on startup"
         }
       },
       "auth_password": {
@@ -33,7 +34,8 @@
         "data": {
           "host": "IP Address or Hostname",
           "port": "SSH Port",
-          "auth_method": "Authentication Method"
+          "auth_method": "Authentication Method",
+          "startup_lightweight_read": "Lightweight read on startup"
         }
       },
       "reconfigure_auth_password": {
@@ -51,6 +53,17 @@
           "username": "Username",
           "ssh_key_path": "SSH Private Key Path",
           "ssh_key_passphrase": "Key Passphrase (optional)"
+        }
+      }
+    },
+    "options": {
+      "step": {
+        "init": {
+          "title": "UniFi Cable Tester Options",
+          "description": "Configure optional startup behavior.",
+          "data": {
+            "startup_lightweight_read": "Lightweight read on startup"
+          }
         }
       }
     },

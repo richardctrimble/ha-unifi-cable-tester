@@ -16,6 +16,7 @@ from .const import (
     CONF_AUTH_METHOD,
     CONF_SSH_KEY_PASSPHRASE,
     CONF_SSH_KEY_PATH,
+    CONF_STARTUP_LIGHTWEIGHT_READ,
     DEFAULT_SSH_PORT,
     DEFAULT_USERNAME,
     DOMAIN,
@@ -39,6 +40,13 @@ class UniFiCableTesterConfigFlow(
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._data: dict[str, Any] = {}
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Return options flow for this config entry."""
+        return UniFiCableTesterOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -68,6 +76,7 @@ class UniFiCableTesterConfigFlow(
                         AUTH_METHOD_KEY: "SSH Key",
                     }
                 ),
+                vol.Optional(CONF_STARTUP_LIGHTWEIGHT_READ, default=False): bool,
             }
         )
 
@@ -174,6 +183,10 @@ class UniFiCableTesterConfigFlow(
                         AUTH_METHOD_KEY: "SSH Key",
                     }
                 ),
+                vol.Optional(
+                    CONF_STARTUP_LIGHTWEIGHT_READ,
+                    default=existing.get(CONF_STARTUP_LIGHTWEIGHT_READ, False),
+                ): bool,
             }
         )
 
@@ -312,3 +325,34 @@ class UniFiCableTesterConfigFlow(
             return "unknown"
         finally:
             await client.disconnect()
+
+
+class UniFiCableTesterOptionsFlow(config_entries.OptionsFlow):
+    """Handle options flow for UniFi Cable Tester."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Manage options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        default_value = self.config_entry.options.get(
+            CONF_STARTUP_LIGHTWEIGHT_READ,
+            self.config_entry.data.get(CONF_STARTUP_LIGHTWEIGHT_READ, False),
+        )
+
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_STARTUP_LIGHTWEIGHT_READ,
+                    default=default_value,
+                ): bool,
+            }
+        )
+
+        return self.async_show_form(step_id="init", data_schema=schema)

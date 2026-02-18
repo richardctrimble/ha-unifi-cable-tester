@@ -6,6 +6,7 @@ DOMAIN = "unifi_cable_tester"
 CONF_AUTH_METHOD = "auth_method"
 CONF_SSH_KEY_PATH = "ssh_key_path"
 CONF_SSH_KEY_PASSPHRASE = "ssh_key_passphrase"
+CONF_STARTUP_LIGHTWEIGHT_READ = "startup_lightweight_read"
 
 AUTH_METHOD_PASSWORD = "password"
 AUTH_METHOD_KEY = "key"
