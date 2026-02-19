@@ -188,6 +188,59 @@ class UniFiSSHClient:
                 f"Command '{command}' failed: {err}"
             ) from err
 
+    async def run_shell_command(self, command: str, timeout: int = 30) -> str:
+        """Execute a command in the UniFi interactive shell.
+        
+        Some commands like 'info' are only available in the UniFi shell,
+        not when running commands directly via SSH.
+        """
+        await self._ensure_connected()
+        assert self._conn is not None
+
+        collected_output = ""
+        
+        try:
+            async with self._conn.create_process(
+                term_type="vt100",
+                encoding="utf-8",
+            ) as process:
+                # Send the command
+                process.stdin.write(f"{command}\n")
+                await asyncio.sleep(0.5)
+                
+                # Exit the shell
+                process.stdin.write("exit\n")
+                await asyncio.sleep(0.3)
+
+                # Read output until EOF
+                deadline = asyncio.get_event_loop().time() + timeout
+                
+                while asyncio.get_event_loop().time() < deadline:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            process.stdout.read(4096),
+                            timeout=2.0,
+                        )
+                        if not chunk:
+                            break
+                        collected_output += chunk
+                    except asyncio.TimeoutError:
+                        break
+
+                return collected_output
+
+        except asyncio.TimeoutError as err:
+            if collected_output:
+                return collected_output
+            raise UniFiCommandError(
+                f"Shell command '{command}' timed out after {timeout}s"
+            ) from err
+        except (asyncssh.Error, OSError) as err:
+            self._conn = None
+            raise UniFiCommandError(
+                f"Shell command '{command}' failed: {err}"
+            ) from err
+
     async def get_port_count(self) -> int:
         """Discover the number of ports on the switch."""
         output = await self.run_command(CMD_PORT_SHOW)
@@ -198,7 +251,9 @@ class UniFiSSHClient:
         info = SwitchInfo()
 
         try:
-            output = await self.run_command(CMD_SYSTEM_INFO)
+            # Use run_shell_command because 'info' is a UniFi shell command,
+            # not available when running commands directly via SSH
+            output = await self.run_shell_command(CMD_SYSTEM_INFO)
             info = self._parse_switch_info(output)
         except UniFiCommandError:
             _LOGGER.debug("Could not get system info, using defaults")
@@ -361,6 +416,10 @@ class UniFiSSHClient:
     def _parse_switch_info(output: str) -> SwitchInfo:
         """Parse info command output for switch details."""
         info = SwitchInfo()
+        
+        # Clean ANSI escape codes from terminal output
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        output = ansi_escape.sub('', output)
 
         def _value_after_delim(text: str) -> str | None:
             for delim in (":", "="):
@@ -371,6 +430,12 @@ class UniFiSSHClient:
         for line in output.strip().splitlines():
             line = line.strip()
             if not line:
+                continue
+            
+            # Skip prompt lines (end with # or >, or are just the command echo)
+            if line.endswith("#") or line.endswith(">"):
+                continue
+            if line == "info" or line == "exit":
                 continue
 
             lower = line.lower()
@@ -402,7 +467,8 @@ class UniFiSSHClient:
                         info.mac = normalized.group(0).replace("-", ":").lower()
                     else:
                         info.mac = value
-
+        
+        _LOGGER.debug("Parsed switch info: %s", info)
         return info
 
     @staticmethod
