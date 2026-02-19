@@ -201,40 +201,40 @@ class UniFiSSHClient:
         assert self._conn is not None
 
         collected_output = ""
+        process = None
         
         try:
-            async with self._conn.create_process(
+            # Don't use async context manager - it hangs on wait_closed()
+            process = await self._conn.create_process(
                 term_type="vt100",
                 encoding="utf-8",
-            ) as process:
-                # Send the command
-                process.stdin.write(f"{command}\n")
-                await asyncio.sleep(0.5)
-                
-                # Read output with timeout
-                deadline = asyncio.get_event_loop().time() + timeout
-                
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        chunk = await asyncio.wait_for(
-                            process.stdout.read(4096),
-                            timeout=2.0,
-                        )
-                        if not chunk:
-                            break
-                        collected_output += chunk
-                        
-                        # Check if we have the complete info output
-                        if command == "info" and "Status:" in collected_output:
-                            break
-                    except asyncio.TimeoutError:
-                        # Got what we need, break out
+            )
+            
+            # Send the command
+            process.stdin.write(f"{command}\n")
+            await asyncio.sleep(0.5)
+            
+            # Read output with timeout
+            deadline = asyncio.get_event_loop().time() + timeout
+            
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    chunk = await asyncio.wait_for(
+                        process.stdout.read(4096),
+                        timeout=2.0,
+                    )
+                    if not chunk:
                         break
-
-                # Terminate the process channel cleanly (don't send exit which closes SSH)
-                process.terminate()
+                    collected_output += chunk
+                    
+                    # Check if we have the complete info output
+                    if command == "info" and "Status:" in collected_output:
+                        break
+                except asyncio.TimeoutError:
+                    # Got what we need, break out
+                    break
                 
-                return collected_output
+            return collected_output
 
         except asyncio.TimeoutError as err:
             if collected_output:
@@ -247,6 +247,14 @@ class UniFiSSHClient:
             raise UniFiCommandError(
                 f"Shell command '{command}' failed: {err}"
             ) from err
+        finally:
+            # Force close the process without waiting
+            if process is not None:
+                try:
+                    process.kill()
+                    process.close()
+                except Exception:
+                    pass
 
     async def get_port_count(self) -> int:
         """Discover the number of ports on the switch."""
@@ -292,59 +300,59 @@ class UniFiSSHClient:
         _LOGGER.debug("Running CLI commands: %s", commands)
 
         collected_output = ""
+        process = None
         
         try:
-            async with self._conn.create_process(
+            # Don't use async context manager - it hangs on wait_closed()
+            process = await self._conn.create_process(
                 term_type="vt100",
                 encoding="utf-8",
-            ) as process:
-                # Enter CLI mode
-                process.stdin.write(f"{CMD_CLI_ENTER}\n")
-                await asyncio.sleep(1.0)  # CLI takes a moment to start
-                
-                # Run all the cable test commands
-                for cmd in commands:
-                    process.stdin.write(f"{cmd}\n")
-                    await asyncio.sleep(0.5)
-                
-                # Exit first CLI layer (goes to ">" prompt)
-                process.stdin.write(f"{CMD_CLI_EXIT}\n")
-                await asyncio.sleep(0.3)
-                
-                # Exit second CLI layer (shows "Terminated", back at shell)
-                process.stdin.write(f"{CMD_CLI_EXIT}\n")
+            )
+            
+            # Enter CLI mode
+            process.stdin.write(f"{CMD_CLI_ENTER}\n")
+            await asyncio.sleep(1.0)  # CLI takes a moment to start
+            
+            # Run all the cable test commands
+            for cmd in commands:
+                process.stdin.write(f"{cmd}\n")
                 await asyncio.sleep(0.5)
+            
+            # Exit first CLI layer (goes to ">" prompt)
+            process.stdin.write(f"{CMD_CLI_EXIT}\n")
+            await asyncio.sleep(0.3)
+            
+            # Exit second CLI layer (shows "Terminated", back at shell)
+            process.stdin.write(f"{CMD_CLI_EXIT}\n")
+            await asyncio.sleep(0.5)
 
-                # Read output with timeout - look for "Terminated" marker
-                deadline = asyncio.get_event_loop().time() + timeout
-                
-                while asyncio.get_event_loop().time() < deadline:
-                    try:
-                        chunk = await asyncio.wait_for(
-                            process.stdout.read(4096),
-                            timeout=3.0,
-                        )
-                        if not chunk:
-                            _LOGGER.debug("EOF reached")
-                            break
-                        collected_output += chunk
-                        _LOGGER.debug("Read chunk: %d bytes", len(chunk))
-                        
-                        # Stop reading once we see "Terminated"
-                        if "Terminated" in collected_output:
-                            _LOGGER.debug("Saw 'Terminated', done reading")
-                            break
-                    except asyncio.TimeoutError:
-                        # No more data coming, we're done
-                        _LOGGER.debug("Read timeout, assuming complete")
+            # Read output with timeout - look for "Terminated" marker
+            deadline = asyncio.get_event_loop().time() + timeout
+            
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    chunk = await asyncio.wait_for(
+                        process.stdout.read(4096),
+                        timeout=3.0,
+                    )
+                    if not chunk:
+                        _LOGGER.debug("EOF reached")
                         break
+                    collected_output += chunk
+                    _LOGGER.debug("Read chunk: %d bytes", len(chunk))
+                    
+                    # Stop reading once we see "Terminated"
+                    if "Terminated" in collected_output:
+                        _LOGGER.debug("Saw 'Terminated', done reading")
+                        break
+                except asyncio.TimeoutError:
+                    # No more data coming, we're done
+                    _LOGGER.debug("Read timeout, assuming complete")
+                    break
 
-                # Terminate the process channel (don't send exit which closes SSH)
-                process.terminate()
-                
-                _LOGGER.debug("CLI output length: %d chars", len(collected_output))
-                _LOGGER.debug("CLI output:\n%s", collected_output[:3000] if len(collected_output) > 3000 else collected_output)
-                return collected_output
+            _LOGGER.debug("CLI output length: %d chars", len(collected_output))
+            _LOGGER.debug("CLI output:\n%s", collected_output[:3000] if len(collected_output) > 3000 else collected_output)
+            return collected_output
 
         except asyncio.TimeoutError as err:
             _LOGGER.debug("Final timeout, collected %d chars", len(collected_output))
@@ -358,6 +366,14 @@ class UniFiSSHClient:
             raise UniFiCommandError(
                 f"CLI commands failed: {err}"
             ) from err
+        finally:
+            # Force close the process without waiting
+            if process is not None:
+                try:
+                    process.kill()
+                    process.close()
+                except Exception:
+                    pass
 
     async def run_cable_test(
         self,
