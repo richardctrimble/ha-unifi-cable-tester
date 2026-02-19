@@ -213,43 +213,28 @@ class UniFiSSHClient:
     async def run_cli_commands(self, commands: list[str], timeout: int = 60) -> str:
         """Execute multiple commands in a single CLI session.
 
-        This enters CLI mode, runs all commands, and exits back to shell.
-        Using a single session is much faster than entering/exiting for each command.
+        This runs 'cli' as a subprocess and pipes commands as input.
         """
         await self._ensure_connected()
         assert self._conn is not None
 
+        # Build input: all commands plus exit to leave CLI mode
+        commands_input = "\n".join(commands) + "\nexit\n"
+
+        _LOGGER.debug("Running CLI with input:\n%s", commands_input)
+
         try:
-            # Use an interactive shell session for CLI mode
-            async with self._conn.create_process(
-                term_type="xterm",
-            ) as process:
-                stdin = process.stdin
-                stdout = process.stdout
-
-                # Enter CLI mode
-                stdin.write(f"{CMD_CLI_ENTER}\n")
-                await asyncio.sleep(1.5)  # CLI mode takes a while to enter
-
-                # Run all commands
-                for cmd in commands:
-                    stdin.write(f"{cmd}\n")
-                    await asyncio.sleep(1.0)  # Give time for each test
-
-                # Exit CLI mode (twice)
-                stdin.write(f"{CMD_CLI_EXIT}\n")
-                await asyncio.sleep(0.3)
-                stdin.write(f"{CMD_CLI_EXIT}\n")
-                await asyncio.sleep(0.3)
-
-                # Close stdin and collect output
-                stdin.write_eof()
-
-                output = await asyncio.wait_for(
-                    stdout.read(),
-                    timeout=timeout,
-                )
-                return output
+            result = await asyncio.wait_for(
+                self._conn.run(
+                    CMD_CLI_ENTER,  # "cli"
+                    input=commands_input,
+                    check=False,
+                ),
+                timeout=timeout,
+            )
+            _LOGGER.debug("CLI stdout: %s", result.stdout)
+            _LOGGER.debug("CLI stderr: %s", result.stderr)
+            return result.stdout
 
         except asyncio.TimeoutError as err:
             raise UniFiCommandError(
@@ -595,7 +580,10 @@ class UniFiSSHClient:
         lines = output.strip().splitlines()
         now = datetime.now(timezone.utc)
 
+        _LOGGER.debug("Parsing cable diag output, %d lines", len(lines))
+
         if not lines:
+            _LOGGER.warning("No lines to parse in cable diag output")
             return results
 
         current_port: int | None = None
@@ -616,6 +604,7 @@ class UniFiSSHClient:
                 current_port = int(port_match.group(1))
                 current_result = CableTestResult(port=current_port, last_tested=now)
                 results[current_port] = current_result
+                _LOGGER.debug("Found port %d in line: %s", current_port, line[:60])
 
                 # Check if this is a fiber port (line contains "Fiber" after the port)
                 if "fiber" in line.lower():
@@ -624,6 +613,7 @@ class UniFiSSHClient:
                     current_result.pair_2_status = STATUS_FIBER
                     current_result.pair_3_status = STATUS_FIBER
                     current_result.pair_4_status = STATUS_FIBER
+                    _LOGGER.debug("Port %d is fiber", current_port)
                     continue
 
             if current_result is None:
@@ -640,6 +630,11 @@ class UniFiSSHClient:
                 pair_letter = pair_match.group(1).upper()
                 length_str = pair_match.group(2).strip()
                 status_str = pair_match.group(3).strip()
+
+                _LOGGER.debug(
+                    "Port %d Pair %s: length=%s status=%s",
+                    current_result.port, pair_letter, length_str, status_str
+                )
 
                 # Map pair letter to index
                 pair_index = {"A": 1, "B": 2, "C": 3, "D": 4}.get(pair_letter)
@@ -660,6 +655,7 @@ class UniFiSSHClient:
                 # Set the pair result
                 _set_pair_result(current_result, pair_index, status, length)
 
+        _LOGGER.debug("Parsed %d port results", len(results))
         if not results:
             _LOGGER.warning("Could not parse CLI cable-diag output: %s", output)
 
