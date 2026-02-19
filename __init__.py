@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 import re
 from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
 from homeassistant.core import HomeAssistant, ServiceCall, callback
@@ -30,6 +33,34 @@ from .coordinator import UniFiCableTesterCoordinator
 from .ssh_client import UniFiSSHClient
 
 _LOGGER = logging.getLogger(__name__)
+
+# Frontend card path
+CARD_NAME = "unifi-cable-tester-card.js"
+CARD_URL_PATH = f"/{DOMAIN}/{CARD_NAME}"
+
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the UniFi Cable Tester integration."""
+    hass.data.setdefault(DOMAIN, {})
+    
+    # Register the static path for our custom card
+    card_path = Path(__file__).parent / "www" / CARD_NAME
+    
+    if card_path.exists():
+        try:
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(CARD_URL_PATH, str(card_path), cache_headers=False)]
+            )
+            _LOGGER.info(
+                "UniFi Cable Tester card registered. Add to Lovelace resources: %s",
+                CARD_URL_PATH,
+            )
+        except Exception as err:
+            _LOGGER.warning("Failed to register frontend card: %s", err)
+    else:
+        _LOGGER.debug("Frontend card not found at %s", card_path)
+    
+    return True
 
 
 def _create_client(data: dict) -> UniFiSSHClient:
