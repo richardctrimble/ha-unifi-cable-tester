@@ -15,15 +15,18 @@ AUTH_METHOD_KEY = "key"
 DEFAULT_SSH_PORT = 22
 DEFAULT_USERNAME = "admin"
 
-# SSH commands
+# SSH commands (shell mode)
 CMD_PORT_SHOW = "swctrl port show"
-CMD_CABLE_TEST_RUN = "swctrl cable-test run"
-CMD_CABLE_TEST_RUN_PORT = "swctrl cable-test run port {port}"
-CMD_CABLE_TEST_SHOW = "swctrl cable-test show"
 CMD_SYSTEM_INFO = "info"
 
-# Cable test wait time (seconds) for results to be ready
-CABLE_TEST_WAIT = 8
+# CLI mode commands for cable testing
+# Enter CLI mode with "cli", then run cable diag, then "exit" twice
+CMD_CLI_ENTER = "cli"
+CMD_CLI_EXIT = "exit"
+CMD_CABLE_DIAG = "sh cable-diag int gi{port}"
+
+# Cable test wait time (seconds) - reduced since CLI command is synchronous
+CABLE_TEST_WAIT = 2
 
 # Sensor attribute keys
 ATTR_PAIR_1_STATUS = "pair_1_status"
@@ -46,6 +49,7 @@ STATUS_OPEN = "Open"
 STATUS_SHORT = "Short"
 STATUS_NOT_TESTED = "Not Tested"
 STATUS_TEST_FAILED = "Test Failed"
+STATUS_FIBER = "Fiber"
 STATUS_UNKNOWN = "Unknown"
 
 # Platforms

@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CABLE_TEST_WAIT, DOMAIN
+from .const import DOMAIN
 from .ssh_client import (
     CableTestResult,
     PortStatus,
@@ -68,8 +68,10 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                     "Skipping startup port discovery, using known port count: %d",
                     self.port_count,
                 )
+            # Always fetch switch identity (fast, no side-effects)
+            self.switch_info = await self.client.get_switch_info()
+            # Optionally fetch per-port link details (slightly slower)
             if startup_lightweight_read:
-                self.switch_info = await self.client.get_switch_info()
                 self.port_statuses = await self.client.get_port_statuses()
             _LOGGER.info(
                 "Connected to %s (%s) with %d ports",
@@ -122,24 +124,11 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
         """
         async with self._test_lock:
             try:
-                # Run the cable test
-                await self.client.run_cable_test(port)
-
-                # Wait for the switch to complete the test
-                await asyncio.sleep(CABLE_TEST_WAIT)
-
-                # Fetch results (with retries for slower firmware)
-                results: dict[int, CableTestResult] = {}
-                for attempt in range(1, 5):
-                    results = await self.client.get_cable_test_results()
-                    if results and (port is None or port in results):
-                        break
-                    _LOGGER.debug(
-                        "Cable test results not ready yet (attempt %d/4)",
-                        attempt,
-                    )
-                    if attempt < 4:
-                        await asyncio.sleep(3)
+                # Run the cable test (CLI mode runs and returns results in one call)
+                results = await self.client.run_cable_test(
+                    port=port,
+                    port_count=self.port_count,
+                )
 
                 # Refresh link/speed/type details
                 self.port_statuses = await self.client.get_port_statuses()

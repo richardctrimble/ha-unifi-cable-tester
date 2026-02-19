@@ -1,0 +1,17 @@
+run_cable_test:
+  name: Run Cable Test
+  description: Run a cable test on a UniFi switch port.
+  target:
+    device:
+      integration: unifi_cable_tester
+  fields:
+    port:
+      name: Port
+      description: The port number to test. Leave empty to test all ports.
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 52
+          mode: box

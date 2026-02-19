@@ -29,6 +29,7 @@ from .const import (
     ATTR_PAIR_4_LENGTH,
     ATTR_PAIR_4_STATUS,
     DOMAIN,
+    STATUS_FIBER,
     STATUS_NOT_TESTED,
     STATUS_OK,
     STATUS_OPEN,
@@ -63,7 +64,6 @@ class UniFiCableTestSensor(
     """Sensor showing cable test status for a switch port."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_icon = "mdi:ethernet-cable"
 
     def __init__(
         self,
@@ -77,6 +77,16 @@ class UniFiCableTestSensor(
             f"{coordinator.config_entry.entry_id}_port_{port}_cable_status"
         )
         self._attr_name = f"Port {port} Cable Status"
+
+    @property
+    def icon(self) -> str:
+        """Return icon based on port type."""
+        # Check if this port returned Fiber in cable test
+        if self.coordinator.data and self._port in self.coordinator.data:
+            result = self.coordinator.data[self._port]
+            if result.pair_1_status == STATUS_FIBER:
+                return "mdi:fiber-manual-record"  # Fiber optic icon
+        return "mdi:ethernet-cable"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -114,6 +124,9 @@ class UniFiCableTestSensor(
             result.pair_4_status,
         ]
 
+        # Fiber ports return Fiber status for all pairs
+        if all(s == STATUS_FIBER for s in statuses):
+            return STATUS_FIBER
         if STATUS_SHORT in statuses:
             return STATUS_SHORT
         if STATUS_OPEN in statuses:
@@ -135,6 +148,8 @@ class UniFiCableTestSensor(
         attrs[ATTR_PORT_CONNECTED] = port_status.connected if port_status else None
         attrs[ATTR_PORT_SPEED] = port_status.speed_display if port_status else None
         attrs[ATTR_PORT_SPEED_MBPS] = port_status.speed_mbps if port_status else None
+
+        # Set port type from port status if available
         attrs[ATTR_PORT_TYPE] = port_status.port_type if port_status else None
 
         if not self.coordinator.data or self._port not in self.coordinator.data:

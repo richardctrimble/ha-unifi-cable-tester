@@ -28,17 +28,12 @@ async def async_setup_entry(
     """Set up UniFi cable test buttons."""
     coordinator: UniFiCableTesterCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities: list[ButtonEntity] = []
-
-    # Per-port test buttons
-    for port in range(1, coordinator.port_count + 1):
-        entities.append(UniFiCableTestButton(coordinator, port))
-
-    # "Test All" button
-    entities.append(UniFiCableTestButton(coordinator, port=None))
-
-    # Manual switch status refresh button (no cable test)
-    entities.append(UniFiRefreshSwitchStatusButton(coordinator))
+    entities: list[ButtonEntity] = [
+        # "Test All Cables" button
+        UniFiCableTestButton(coordinator),
+        # Manual switch status refresh button (no cable test)
+        UniFiRefreshSwitchStatusButton(coordinator),
+    ]
 
     async_add_entities(entities)
 
@@ -46,31 +41,18 @@ async def async_setup_entry(
 class UniFiCableTestButton(
     CoordinatorEntity[UniFiCableTesterCoordinator], ButtonEntity
 ):
-    """Button to trigger a cable test on a switch port."""
+    """Button to trigger a cable test on all ports."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:ethernet-cable-off"
 
-    def __init__(
-        self,
-        coordinator: UniFiCableTesterCoordinator,
-        port: int | None,
-    ) -> None:
+    def __init__(self, coordinator: UniFiCableTesterCoordinator) -> None:
         """Initialize the button."""
         super().__init__(coordinator)
-        self._port = port
-
-        if port is None:
-            self._attr_unique_id = (
-                f"{coordinator.config_entry.entry_id}_test_all_cables"
-            )
-            self._attr_name = "Test All Cables"
-            self._attr_icon = "mdi:ethernet-cable-off"
-        else:
-            self._attr_unique_id = (
-                f"{coordinator.config_entry.entry_id}_port_{port}_test_cable"
-            )
-            self._attr_name = f"Port {port} Test Cable"
-            self._attr_icon = "mdi:ethernet-cable"
+        self._attr_unique_id = (
+            f"{coordinator.config_entry.entry_id}_test_all_cables"
+        )
+        self._attr_name = "Test All Cables"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -93,18 +75,12 @@ class UniFiCableTestButton(
         )
 
     async def async_press(self) -> None:
-        """Handle button press — trigger cable test."""
+        """Handle button press — trigger cable test on all ports."""
         try:
-            await self.coordinator.async_request_cable_test(self._port)
+            await self.coordinator.async_request_cable_test(port=None)
         except Exception as err:
-            _LOGGER.error(
-                "Cable test failed for %s: %s",
-                f"port {self._port}" if self._port else "all ports",
-                err,
-            )
-            raise HomeAssistantError(
-                f"Cable test failed: {err}"
-            ) from err
+            _LOGGER.error("Cable test failed for all ports: %s", err)
+            raise HomeAssistantError(f"Cable test failed: {err}") from err
 
 
 class UniFiRefreshSwitchStatusButton(

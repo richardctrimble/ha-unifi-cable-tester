@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import Any
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
+from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.helpers import (
+    config_validation as cv,
+    device_registry as dr,
+    entity_registry as er,
+)
 
 from .const import (
     CONF_AUTH_METHOD,
@@ -78,7 +85,67 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Forward setup to platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # Register services (only once for the domain)
+    _async_register_services(hass)
+
     return True
+
+
+SERVICE_RUN_CABLE_TEST = "run_cable_test"
+ATTR_PORT = "port"
+
+SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_PORT): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=52)
+        ),
+    }
+)
+
+
+@callback
+def _async_register_services(hass: HomeAssistant) -> None:
+    """Register integration services."""
+    if hass.services.has_service(DOMAIN, SERVICE_RUN_CABLE_TEST):
+        return
+
+    async def async_handle_cable_test(call: ServiceCall) -> None:
+        """Handle run_cable_test service call."""
+        port: int | None = call.data.get(ATTR_PORT)
+        device_ids: set[str] = set()
+
+        # Collect target device IDs
+        if call.data.get("device_id"):
+            device_ids.update(
+                call.data["device_id"]
+                if isinstance(call.data["device_id"], list)
+                else [call.data["device_id"]]
+            )
+
+        if not device_ids:
+            # No specific device targeted — run on all configured switches
+            for coordinator in hass.data.get(DOMAIN, {}).values():
+                if isinstance(coordinator, UniFiCableTesterCoordinator):
+                    await coordinator.async_request_cable_test(port)
+            return
+
+        # Map device IDs back to coordinators
+        device_reg = dr.async_get(hass)
+        for device_id in device_ids:
+            device_entry = device_reg.async_get(device_id)
+            if device_entry is None:
+                continue
+            for entry_id in device_entry.config_entries:
+                coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+                if isinstance(coordinator, UniFiCableTesterCoordinator):
+                    await coordinator.async_request_cable_test(port)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RUN_CABLE_TEST,
+        async_handle_cable_test,
+        schema=SERVICE_SCHEMA,
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

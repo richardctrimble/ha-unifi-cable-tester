@@ -11,11 +11,12 @@ from datetime import datetime, timezone
 import asyncssh
 
 from .const import (
-    CMD_CABLE_TEST_RUN,
-    CMD_CABLE_TEST_RUN_PORT,
-    CMD_CABLE_TEST_SHOW,
+    CMD_CABLE_DIAG,
+    CMD_CLI_ENTER,
+    CMD_CLI_EXIT,
     CMD_PORT_SHOW,
     CMD_SYSTEM_INFO,
+    STATUS_FIBER,
     STATUS_NOT_TESTED,
     STATUS_OK,
     STATUS_OPEN,
@@ -209,20 +210,99 @@ class UniFiSSHClient:
         output = await self.run_command(CMD_PORT_SHOW)
         return self._parse_port_statuses(output)
 
-    async def run_cable_test(self, port: int | None = None) -> None:
-        """Run cable test on a specific port or all ports."""
-        if port is not None:
-            cmd = CMD_CABLE_TEST_RUN_PORT.format(port=port)
-        else:
-            cmd = CMD_CABLE_TEST_RUN
+    async def run_cli_commands(self, commands: list[str], timeout: int = 60) -> str:
+        """Execute multiple commands in a single CLI session.
 
-        _LOGGER.debug("Running cable test: %s", cmd)
-        await self.run_command(cmd)
+        This enters CLI mode, runs all commands, and exits back to shell.
+        Using a single session is much faster than entering/exiting for each command.
+        """
+        await self._ensure_connected()
+        assert self._conn is not None
+
+        try:
+            # Use an interactive shell session for CLI mode
+            async with self._conn.create_process(
+                term_type="xterm",
+            ) as process:
+                stdin = process.stdin
+                stdout = process.stdout
+
+                # Enter CLI mode
+                stdin.write(f"{CMD_CLI_ENTER}\n")
+                await asyncio.sleep(1.5)  # CLI mode takes a while to enter
+
+                # Run all commands
+                for cmd in commands:
+                    stdin.write(f"{cmd}\n")
+                    await asyncio.sleep(1.0)  # Give time for each test
+
+                # Exit CLI mode (twice)
+                stdin.write(f"{CMD_CLI_EXIT}\n")
+                await asyncio.sleep(0.3)
+                stdin.write(f"{CMD_CLI_EXIT}\n")
+                await asyncio.sleep(0.3)
+
+                # Close stdin and collect output
+                stdin.write_eof()
+
+                output = await asyncio.wait_for(
+                    stdout.read(),
+                    timeout=timeout,
+                )
+                return output
+
+        except asyncio.TimeoutError as err:
+            raise UniFiCommandError(
+                f"CLI commands timed out after {timeout}s"
+            ) from err
+        except (asyncssh.Error, OSError) as err:
+            self._conn = None
+            raise UniFiCommandError(
+                f"CLI commands failed: {err}"
+            ) from err
+
+    async def run_cable_test(
+        self,
+        port: int | None = None,
+        port_count: int = 24,
+    ) -> dict[int, CableTestResult]:
+        """Run cable test and return results.
+
+        Uses CLI mode: cli -> sh cable-diag int gi{port} -> exit -> exit
+
+        Args:
+            port: Specific port to test, or None for all ports.
+            port_count: Total number of ports (used when testing all).
+
+        Returns:
+            Dictionary mapping port numbers to CableTestResult objects.
+        """
+        if port is not None:
+            # Single port test
+            commands = [CMD_CABLE_DIAG.format(port=port)]
+            timeout = 30
+        else:
+            # All ports - build list of commands
+            commands = [CMD_CABLE_DIAG.format(port=p) for p in range(1, port_count + 1)]
+            # Allow more time for all ports (1.5s per port + overhead)
+            timeout = max(60, len(commands) * 2 + 10)
+
+        _LOGGER.debug(
+            "Running cable test in CLI mode: %d commands, timeout=%ds",
+            len(commands),
+            timeout,
+        )
+        output = await self.run_cli_commands(commands, timeout=timeout)
+        _LOGGER.debug("Cable test raw output length: %d chars", len(output))
+        return self._parse_cable_diag_output(output)
 
     async def get_cable_test_results(self) -> dict[int, CableTestResult]:
-        """Fetch and parse cable test results."""
-        output = await self.run_command(CMD_CABLE_TEST_SHOW)
-        return self._parse_cable_test_output(output)
+        """Fetch cable test results (alias for run_cable_test with no port).
+
+        Note: On UniFi switches, the cable test runs when the command is issued,
+        so this effectively runs a test on all ports.
+        """
+        return await self.run_cable_test(port=None)
 
     @staticmethod
     def _parse_port_count(output: str) -> int:
@@ -230,8 +310,9 @@ class UniFiSSHClient:
         max_port = 0
         for line in output.strip().splitlines():
             line = line.strip()
-            # Look for lines starting with a port number
-            match = re.match(r"^(\d+)\s+", line)
+            # Look for lines starting with a port number (with optional U prefix)
+            # Examples: "1  U/U", "14  U/D", "U24  U/U"
+            match = re.match(r"^U?(\d+)\s+", line)
             if match:
                 port_num = int(match.group(1))
                 max_port = max(max_port, port_num)
@@ -290,7 +371,17 @@ class UniFiSSHClient:
 
     @staticmethod
     def _parse_port_statuses(output: str) -> dict[int, PortStatus]:
-        """Parse swctrl port show output into per-port status details."""
+        """Parse swctrl port show output into per-port status details.
+
+        Example output format:
+           1  U/U    100F  104575713   46802349 ...
+          14  U/D      0H          0          0 ...
+         U24  U/U   1000F  329265178  170170901 ...
+
+        - Port: number with optional U prefix (U24 = uplink port 24)
+        - Link: U/U = up/up (connected), U/D = up/down (disconnected)
+        - Rate: 100F = 100Mbps Full, 1000F = 1Gbps Full, 0H = no link
+        """
         statuses: dict[int, PortStatus] = {}
 
         for line in output.strip().splitlines():
@@ -298,73 +389,40 @@ class UniFiSSHClient:
             if not raw:
                 continue
 
-            match = re.match(r"^(\d+)\s+(.*)", raw)
+            # Match port number (with optional U prefix for uplink ports)
+            # Examples: "1", "14", "U24"
+            match = re.match(r"^U?(\d+)\s+(.*)", raw)
             if not match:
                 continue
 
             port = int(match.group(1))
-            details = match.group(2)
-            lower = details.lower()
+            rest = match.group(2)
 
+            # Parse link status: U/U = connected, U/D = disconnected
             connected: bool | None = None
-            if any(
-                marker in lower
-                for marker in (
-                    "notconnect",
-                    "not connected",
-                    "disconnected",
-                    "link down",
-                    " down",
-                    "disabled",
-                    "no-link",
-                    "nolink",
-                )
-            ):
+            link_match = re.search(r"\bU/([UD])\b", rest)
+            if link_match:
+                connected = link_match.group(1) == "U"
+            elif "disabled" in rest.lower():
                 connected = False
-            elif any(
-                marker in lower
-                for marker in (
-                    "connected",
-                    "link up",
-                    " up",
-                    "active",
-                )
-            ):
-                connected = True
 
+            # Parse rate: 100F, 1000F, 0H, etc.
+            # The number is the speed in Mbps, letter is duplex (F=Full, H=Half)
             speed_mbps: int | None = None
             speed_display: str | None = None
-
-            speed_with_unit = re.search(
-                r"\b(\d+(?:\.\d+)?)\s*(g(?:bps)?|m(?:bps)?)\b",
-                lower,
-            )
-            if speed_with_unit:
-                value = float(speed_with_unit.group(1))
-                unit = speed_with_unit.group(2)
-                if unit.startswith("g"):
-                    speed_mbps = int(value * 1000)
-                else:
-                    speed_mbps = int(value)
-            else:
-                speed_plain = re.search(
-                    r"\b(10|100|1000|2500|5000|10000)\b",
-                    lower,
-                )
-                if speed_plain:
-                    speed_mbps = int(speed_plain.group(1))
-
-            if speed_mbps is not None:
-                if speed_mbps >= 1000 and speed_mbps % 1000 == 0:
+            rate_match = re.search(r"\b(\d+)[FH]\b", rest)
+            if rate_match:
+                speed_mbps = int(rate_match.group(1))
+                if speed_mbps == 0:
+                    speed_mbps = None  # 0H means no link
+                elif speed_mbps >= 1000 and speed_mbps % 1000 == 0:
                     speed_display = f"{speed_mbps // 1000} Gbps"
                 else:
                     speed_display = f"{speed_mbps} Mbps"
 
+            # Port type detection (SFP ports are typically 25/26 on USW-24-PoE)
+            # For now we can't reliably detect this from the output
             port_type: str | None = None
-            if any(k in lower for k in ("sfp", "sfp+", "sfp28", "fiber", "fibre")):
-                port_type = "fiber"
-            elif any(k in lower for k in ("rj45", "base-t", "copper", "ethernet")):
-                port_type = "copper"
 
             statuses[port] = PortStatus(
                 port=port,
@@ -518,6 +576,108 @@ class UniFiSSHClient:
             _LOGGER.warning("Could not parse any cable test results from: %s", output)
 
         return results
+
+    @staticmethod
+    def _parse_cable_diag_output(output: str) -> dict[int, CableTestResult]:
+        """Parse CLI 'sh cable-diag' output into structured results.
+
+        Example output format:
+        Port   |  Speed | Local pair | Pair length | Pair status
+        --------+--------+------------+-------------+---------------
+          gi1   |  auto  |    Pair A  |    24.00    | Normal
+                              Pair B  |    24.00    | Normal
+                              Pair C  |     N/A     | Not Supported
+                              Pair D  |     N/A     | Not Supported
+
+        Status values: Normal=OK, Open, Short, Not Supported=N/A
+        """
+        results: dict[int, CableTestResult] = {}
+        lines = output.strip().splitlines()
+        now = datetime.now(timezone.utc)
+
+        if not lines:
+            return results
+
+        current_port: int | None = None
+        current_result: CableTestResult | None = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Skip header and separator lines
+            if line.startswith(("-", "=", "Port")) or "--------" in line:
+                continue
+
+            # Check if this line starts with a port identifier (gi1, gi2, etc.)
+            port_match = re.match(r"gi(\d+)\s*\|", line)
+            if port_match:
+                current_port = int(port_match.group(1))
+                current_result = CableTestResult(port=current_port, last_tested=now)
+                results[current_port] = current_result
+
+                # Check if this is a fiber port (line contains "Fiber" after the port)
+                if "fiber" in line.lower():
+                    # Mark all pairs as Fiber - no cable test possible
+                    current_result.pair_1_status = STATUS_FIBER
+                    current_result.pair_2_status = STATUS_FIBER
+                    current_result.pair_3_status = STATUS_FIBER
+                    current_result.pair_4_status = STATUS_FIBER
+                    continue
+
+            if current_result is None:
+                continue
+
+            # Parse pair data from this line
+            # Look for: Pair [A-D] | length | status
+            pair_match = re.search(
+                r"Pair\s+([A-D])\s*\|\s*([^\|]+)\s*\|\s*(.+)$",
+                line,
+                re.IGNORECASE,
+            )
+            if pair_match:
+                pair_letter = pair_match.group(1).upper()
+                length_str = pair_match.group(2).strip()
+                status_str = pair_match.group(3).strip()
+
+                # Map pair letter to index
+                pair_index = {"A": 1, "B": 2, "C": 3, "D": 4}.get(pair_letter)
+                if pair_index is None:
+                    continue
+
+                # Parse length
+                length: float | None = None
+                if length_str.lower() not in ("n/a", "na", "-", ""):
+                    try:
+                        length = float(length_str)
+                    except ValueError:
+                        pass
+
+                # Normalize status
+                status = _normalize_cable_status(status_str)
+
+                # Set the pair result
+                _set_pair_result(current_result, pair_index, status, length)
+
+        if not results:
+            _LOGGER.warning("Could not parse CLI cable-diag output: %s", output)
+
+        return results
+
+
+def _normalize_cable_status(status: str) -> str:
+    """Normalize a cable status string from CLI output."""
+    status = status.strip().lower()
+    if status in ("normal", "ok", "good"):
+        return STATUS_OK
+    if status in ("open", "disconnect", "disconnected"):
+        return STATUS_OPEN
+    if status in ("short",):
+        return STATUS_SHORT
+    if status in ("not supported", "n/a", "na", "-", ""):
+        return STATUS_NOT_TESTED
+    return STATUS_UNKNOWN
 
 
 def _normalize_status(status: str) -> str:
