@@ -213,30 +213,81 @@ class UniFiSSHClient:
     async def run_cli_commands(self, commands: list[str], timeout: int = 60) -> str:
         """Execute multiple commands in a single CLI session.
 
-        This runs 'cli' as a subprocess and pipes commands as input.
+        SSH is already connected. This opens an interactive shell,
+        runs 'cli' to enter CLI mode, executes commands, then exits.
+        
+        Sequence: 
+        - cli (enter CLI mode)
+        - commands
+        - exit (leave first CLI layer)
+        - exit (leave second CLI layer - shows "Terminated")
+        - exit (close SSH shell)
         """
         await self._ensure_connected()
         assert self._conn is not None
 
-        # Build input: all commands plus exit to leave CLI mode
-        commands_input = "\n".join(commands) + "\nexit\n"
+        _LOGGER.debug("Running CLI commands: %s", commands)
 
-        _LOGGER.debug("Running CLI with input:\n%s", commands_input)
-
+        collected_output = ""
+        
         try:
-            result = await asyncio.wait_for(
-                self._conn.run(
-                    CMD_CLI_ENTER,  # "cli"
-                    input=commands_input,
-                    check=False,
-                ),
-                timeout=timeout,
-            )
-            _LOGGER.debug("CLI stdout: %s", result.stdout)
-            _LOGGER.debug("CLI stderr: %s", result.stderr)
-            return result.stdout
+            async with self._conn.create_process(
+                term_type="vt100",
+                encoding="utf-8",
+            ) as process:
+                # Enter CLI mode
+                process.stdin.write(f"{CMD_CLI_ENTER}\n")
+                await asyncio.sleep(1.0)  # CLI takes a moment to start
+                
+                # Run all the cable test commands
+                for cmd in commands:
+                    process.stdin.write(f"{cmd}\n")
+                    await asyncio.sleep(0.5)
+                
+                # Exit first CLI layer
+                process.stdin.write(f"{CMD_CLI_EXIT}\n")
+                await asyncio.sleep(0.3)
+                
+                # Exit second CLI layer (will print "Terminated")
+                process.stdin.write(f"{CMD_CLI_EXIT}\n")
+                await asyncio.sleep(0.3)
+                
+                # Exit SSH shell
+                process.stdin.write(f"{CMD_CLI_EXIT}\n")
+                await asyncio.sleep(0.3)
+
+                # Now read output until process ends or timeout
+                deadline = asyncio.get_event_loop().time() + timeout
+                
+                while asyncio.get_event_loop().time() < deadline:
+                    try:
+                        chunk = await asyncio.wait_for(
+                            process.stdout.read(4096),
+                            timeout=3.0,
+                        )
+                        if not chunk:
+                            # EOF - process ended (SSH shell closed)
+                            _LOGGER.debug("EOF reached, shell closed")
+                            break
+                        collected_output += chunk
+                        _LOGGER.debug("Read chunk: %d bytes", len(chunk))
+                    except asyncio.TimeoutError:
+                        # No data for 3 seconds - send extra exit to ensure we close
+                        _LOGGER.debug("Read timeout, sending extra exit")
+                        try:
+                            process.stdin.write(f"{CMD_CLI_EXIT}\n")
+                        except Exception:
+                            pass
+                        continue
+
+                _LOGGER.debug("CLI output length: %d chars", len(collected_output))
+                _LOGGER.debug("CLI output:\n%s", collected_output[:3000] if len(collected_output) > 3000 else collected_output)
+                return collected_output
 
         except asyncio.TimeoutError as err:
+            _LOGGER.debug("Final timeout, collected %d chars", len(collected_output))
+            if collected_output:
+                return collected_output
             raise UniFiCommandError(
                 f"CLI commands timed out after {timeout}s"
             ) from err
