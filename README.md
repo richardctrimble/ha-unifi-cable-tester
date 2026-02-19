@@ -33,9 +33,10 @@ Copy the contents to `custom_components/unifi_cable_tester/`
 1. Edit your dashboard
 2. Click **Add Card**
 3. Search for **"UniFi Cable Tester"**
-4. Configure:
-   - **Switch Name:** Part of your switch's entity name (e.g., `192_168_2_9`)
-   - **Columns:** Number of ports per row (default: 12)
+4. Select your switch from the dropdown (auto-detected)
+5. Adjust columns to match your switch's port layout
+
+That's it! The card automatically detects your configured switches.
 
 ### Manual YAML
 ```yaml

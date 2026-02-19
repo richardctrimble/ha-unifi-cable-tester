@@ -3,7 +3,7 @@
  * Custom Lovelace card for displaying UniFi switch cable test results
  */
 
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 // Status colors
 const STATUS_COLORS = {
@@ -47,9 +47,7 @@ class UnifiCableTesterCard extends HTMLElement {
   }
 
   setConfig(config) {
-    if (!config.device_id && !config.switch_name) {
-      throw new Error("You must specify a device_id or switch_name");
-    }
+    // switch_name is optional - if not specified, shows all switches
     this._config = {
       title: config.title || "UniFi Cable Tester",
       show_header: config.show_header !== false,
@@ -82,8 +80,9 @@ class UnifiCableTesterCard extends HTMLElement {
       const state = this._hass.states[entityId];
       
       // Match cable test sensors (port sensors)
+      // Entity names are like: sensor.unifi_switch_port_1_cable_status
       if (entityId.startsWith("sensor.") && 
-          entityId.includes("cable_test") &&
+          entityId.includes("cable_status") &&
           entityId.includes("port_")) {
         
         // Check if this entity belongs to our device
@@ -666,21 +665,61 @@ class UnifiCableTesterCardEditor extends HTMLElement {
     this._render();
   }
 
+  _detectSwitches() {
+    // Auto-detect switches by finding cable_status entities and grouping by prefix
+    if (!this._hass) return [];
+    
+    const switches = new Map(); // prefix -> { name, entityCount, sampleEntity }
+    const entities = Object.keys(this._hass.states);
+    
+    for (const entityId of entities) {
+      // Match: sensor.XXXX_port_N_cable_status
+      const match = entityId.match(/^sensor\.(.+)_port_\d+_cable_status$/);
+      if (match) {
+        const prefix = match[1];
+        if (!switches.has(prefix)) {
+          // Try to create a friendly name from the prefix
+          let friendlyName = prefix
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, c => c.toUpperCase());
+          
+          // Check if it looks like an IP address pattern
+          const ipMatch = prefix.match(/(\d+)_(\d+)_(\d+)_(\d+)/);
+          if (ipMatch) {
+            friendlyName = `Switch ${ipMatch[1]}.${ipMatch[2]}.${ipMatch[3]}.${ipMatch[4]}`;
+          }
+          
+          switches.set(prefix, {
+            prefix,
+            friendlyName,
+            entityCount: 0,
+          });
+        }
+        switches.get(prefix).entityCount++;
+      }
+    }
+    
+    return Array.from(switches.values()).sort((a, b) => 
+      a.friendlyName.localeCompare(b.friendlyName)
+    );
+  }
+
   _render() {
     if (!this._hass) return;
 
-    // Find available unifi_cable_tester entities to suggest device names
-    const entities = Object.keys(this._hass.states);
-    const deviceNames = new Set();
+    const detectedSwitches = this._detectSwitches();
     
-    for (const entityId of entities) {
-      if (entityId.includes("cable_test")) {
-        const state = this._hass.states[entityId];
-        if (state.attributes.device_name) {
-          deviceNames.add(state.attributes.device_name);
-        }
-      }
+    // Build switch options for dropdown
+    let switchOptions = '<option value="">All Switches</option>';
+    for (const sw of detectedSwitches) {
+      const selected = this._config.switch_name === sw.prefix ? 'selected' : '';
+      switchOptions += `<option value="${sw.prefix}" ${selected}>${sw.friendlyName} (${sw.entityCount} ports)</option>`;
     }
+    
+    // Show helpful message if no switches found
+    const noSwitchesWarning = detectedSwitches.length === 0 
+      ? '<div class="warning">No UniFi Cable Tester switches found. Make sure the integration is set up.</div>'
+      : '';
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -708,14 +747,30 @@ class UnifiCableTesterCardEditor extends HTMLElement {
           display: flex;
           align-items: center;
         }
+        .warning {
+          background: rgba(255, 152, 0, 0.2);
+          color: #FF9800;
+          padding: 12px;
+          border-radius: 8px;
+          margin-bottom: 16px;
+        }
+        .detected-info {
+          font-size: 0.85em;
+          color: var(--secondary-text-color);
+          margin-top: 4px;
+        }
       </style>
       
+      ${noSwitchesWarning}
+      
       <div class="config-row">
-        <label>Switch Name (for filtering)</label>
-        <input type="text" id="switch_name" 
-               value="${this._config.switch_name || ''}" 
-               placeholder="e.g., UniFi Switch or leave empty for all">
-        <small>Part of the entity name to filter by</small>
+        <label>Switch</label>
+        <select id="switch_name">
+          ${switchOptions}
+        </select>
+        <div class="detected-info">
+          ${detectedSwitches.length} switch${detectedSwitches.length !== 1 ? 'es' : ''} detected
+        </div>
       </div>
       
       <div class="config-row">
@@ -724,7 +779,7 @@ class UnifiCableTesterCardEditor extends HTMLElement {
       </div>
       
       <div class="config-row">
-        <label>Columns</label>
+        <label>Columns (ports per row)</label>
         <input type="number" id="columns" value="${this._config.columns || 12}" min="4" max="24">
       </div>
       
