@@ -15,11 +15,14 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    ATTR_ERROR_MESSAGE,
     ATTR_LAST_TESTED,
     ATTR_PORT_CONNECTED,
     ATTR_PORT_SPEED,
     ATTR_PORT_SPEED_MBPS,
     ATTR_PORT_TYPE,
+    ATTR_PORTS_FAILED,
+    ATTR_PORTS_TESTED,
     ATTR_PAIR_1_LENGTH,
     ATTR_PAIR_1_STATUS,
     ATTR_PAIR_2_LENGTH,
@@ -28,6 +31,9 @@ from .const import (
     ATTR_PAIR_3_STATUS,
     ATTR_PAIR_4_LENGTH,
     ATTR_PAIR_4_STATUS,
+    ATTR_TEST_COMPLETED,
+    ATTR_TEST_DURATION,
+    ATTR_TEST_STARTED,
     DOMAIN,
     STATUS_FIBER,
     STATUS_NOT_TESTED,
@@ -36,6 +42,7 @@ from .const import (
     STATUS_SHORT,
     STATUS_TEST_FAILED,
     STATUS_UNKNOWN,
+    TEST_RUN_IDLE,
 )
 from .coordinator import UniFiCableTesterCoordinator
 
@@ -50,12 +57,86 @@ async def async_setup_entry(
     """Set up UniFi cable test sensors."""
     coordinator: UniFiCableTesterCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    entities = [
+    entities: list[SensorEntity] = [
+        # Test run status sensor
+        UniFiTestRunStatusSensor(coordinator),
+    ]
+    
+    # Per-port cable status sensors
+    entities.extend(
         UniFiCableTestSensor(coordinator, port)
         for port in range(1, coordinator.port_count + 1)
-    ]
+    )
 
     async_add_entities(entities)
+
+
+class UniFiTestRunStatusSensor(
+    CoordinatorEntity[UniFiCableTesterCoordinator], SensorEntity
+):
+    """Sensor showing the status of the current/last cable test run."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:test-tube"
+
+    def __init__(self, coordinator: UniFiCableTesterCoordinator) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = (
+            f"{coordinator.config_entry.entry_id}_test_run_status"
+        )
+        self._attr_name = "Test Run Status"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info to link this entity to the switch device."""
+        identifiers = {(DOMAIN, self.coordinator.config_entry.entry_id)}
+        connections: set[tuple[str, str]] = set()
+
+        if self.coordinator.switch_info.mac:
+            mac = self.coordinator.switch_info.mac.lower()
+            identifiers.add((DOMAIN, mac))
+            connections.add((dr.CONNECTION_NETWORK_MAC, mac))
+
+        return DeviceInfo(
+            identifiers=identifiers,
+            connections=connections,
+            name=self.coordinator.switch_info.hostname,
+            manufacturer="Ubiquiti",
+            model=self.coordinator.switch_info.model,
+            sw_version=self.coordinator.switch_info.version,
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the current test run status."""
+        return self.coordinator.test_run_status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return test run details as attributes."""
+        attrs: dict[str, Any] = {}
+
+        if self.coordinator.test_started:
+            attrs[ATTR_TEST_STARTED] = self.coordinator.test_started.isoformat()
+
+        if self.coordinator.test_completed:
+            attrs[ATTR_TEST_COMPLETED] = self.coordinator.test_completed.isoformat()
+            
+            # Calculate duration if both timestamps exist
+            if self.coordinator.test_started:
+                duration = (
+                    self.coordinator.test_completed - self.coordinator.test_started
+                ).total_seconds()
+                attrs[ATTR_TEST_DURATION] = round(duration, 1)
+
+        attrs[ATTR_PORTS_TESTED] = self.coordinator.test_ports_count
+        attrs[ATTR_PORTS_FAILED] = len(self.coordinator.test_failed_ports)
+
+        if self.coordinator.test_error_message:
+            attrs[ATTR_ERROR_MESSAGE] = self.coordinator.test_error_message
+
+        return attrs
 
 
 class UniFiCableTestSensor(
@@ -127,14 +208,24 @@ class UniFiCableTestSensor(
         # Fiber ports return Fiber status for all pairs
         if all(s == STATUS_FIBER for s in statuses):
             return STATUS_FIBER
+        
+        # Check for problems first (Short/Open are always bad)
         if STATUS_SHORT in statuses:
             return STATUS_SHORT
         if STATUS_OPEN in statuses:
             return STATUS_OPEN
-        if all(s == STATUS_OK for s in statuses):
+        
+        # Filter out "Not Tested" pairs (100Mbps only uses pairs A/B)
+        tested_statuses = [s for s in statuses if s != STATUS_NOT_TESTED]
+        
+        # If we have tested pairs and all are OK, the cable is good
+        if tested_statuses and all(s == STATUS_OK for s in tested_statuses):
             return STATUS_OK
-        if all(s == STATUS_NOT_TESTED for s in statuses):
+        
+        # No pairs tested yet
+        if not tested_statuses:
             return STATUS_NOT_TESTED
+        
         return STATUS_UNKNOWN
 
     @property

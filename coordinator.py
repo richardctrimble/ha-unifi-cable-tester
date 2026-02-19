@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN
+from .const import DOMAIN, TEST_RUN_COMPLETED, TEST_RUN_FAILED, TEST_RUN_IDLE, TEST_RUN_RUNNING
 from .ssh_client import (
     CableTestResult,
     PortStatus,
@@ -51,6 +52,13 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
         self.port_statuses: dict[int, PortStatus] = {}
         self.test_failed_ports: set[int] = set()
         self._test_lock = asyncio.Lock()
+        
+        # Test run status tracking
+        self.test_run_status: str = TEST_RUN_IDLE
+        self.test_started: datetime | None = None
+        self.test_completed: datetime | None = None
+        self.test_ports_count: int = 0
+        self.test_error_message: str | None = None
 
     async def async_setup(self, startup_lightweight_read: bool = False) -> None:
         """Connect to the switch and discover required startup data.
@@ -123,6 +131,14 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
             port: Specific port to test, or None for all ports.
         """
         async with self._test_lock:
+            # Update test run status to running
+            self.test_run_status = TEST_RUN_RUNNING
+            self.test_started = datetime.now(timezone.utc)
+            self.test_completed = None
+            self.test_error_message = None
+            self.test_ports_count = 1 if port is not None else self.port_count
+            self.async_set_updated_data(dict(self.data or {}))
+            
             try:
                 # Run the cable test (CLI mode runs and returns results in one call)
                 results = await self.client.run_cable_test(
@@ -154,9 +170,14 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                     self.async_set_updated_data(dict(self.data or {}))
                     raise UpdateFailed("Cable test returned no results")
 
-                # Push updated data to all entities
+                # Update test run status to completed
+                self.test_run_status = TEST_RUN_COMPLETED
+                self.test_completed = datetime.now(timezone.utc)
+                self.test_ports_count = len(results)
+                
+                # Push updated data to all entities (including test run status)
                 self.async_set_updated_data(merged)
-
+                
                 _LOGGER.debug(
                     "Cable test complete for %s, %d port results",
                     f"port {port}" if port else "all ports",
@@ -164,6 +185,10 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                 )
 
             except UpdateFailed:
+                self.test_run_status = TEST_RUN_FAILED
+                self.test_completed = datetime.now(timezone.utc)
+                self.test_error_message = "No results returned"
+                self.async_set_updated_data(dict(self.data or {}))
                 raise
             except (UniFiConnectionError, UniFiCommandError, Exception) as err:
                 # Mark the tested port(s) as failed and notify entities
@@ -172,6 +197,12 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                     else set(range(1, self.port_count + 1))
                 )
                 self.test_failed_ports |= failed_ports
+                
+                # Update test run status to failed
+                self.test_run_status = TEST_RUN_FAILED
+                self.test_completed = datetime.now(timezone.utc)
+                self.test_error_message = str(err)
+                
                 self.async_set_updated_data(dict(self.data or {}))
                 _LOGGER.error("Cable test failed: %s", err)
                 raise UpdateFailed(f"Cable test failed: {err}") from err

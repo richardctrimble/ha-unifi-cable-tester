@@ -52,5 +52,19 @@ STATUS_TEST_FAILED = "Test Failed"
 STATUS_FIBER = "Fiber"
 STATUS_UNKNOWN = "Unknown"
 
+# Test run status values
+TEST_RUN_IDLE = "Idle"
+TEST_RUN_RUNNING = "Running"
+TEST_RUN_COMPLETED = "Completed"
+TEST_RUN_FAILED = "Failed"
+
+# Test run status attributes
+ATTR_TEST_STARTED = "test_started"
+ATTR_TEST_COMPLETED = "test_completed"
+ATTR_PORTS_TESTED = "ports_tested"
+ATTR_PORTS_FAILED = "ports_failed"
+ATTR_ERROR_MESSAGE = "error_message"
+ATTR_TEST_DURATION = "test_duration_seconds"
+
 # Platforms
 PLATFORMS = ["sensor", "button"]
