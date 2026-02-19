@@ -193,6 +193,9 @@ class UniFiSSHClient:
         
         Some commands like 'info' are only available in the UniFi shell,
         not when running commands directly via SSH.
+        
+        Note: This creates a separate process/channel, so it doesn't
+        interfere with the main SSH connection.
         """
         await self._ensure_connected()
         assert self._conn is not None
@@ -208,11 +211,7 @@ class UniFiSSHClient:
                 process.stdin.write(f"{command}\n")
                 await asyncio.sleep(0.5)
                 
-                # Exit the shell
-                process.stdin.write("exit\n")
-                await asyncio.sleep(0.3)
-
-                # Read output until EOF
+                # Read output with timeout
                 deadline = asyncio.get_event_loop().time() + timeout
                 
                 while asyncio.get_event_loop().time() < deadline:
@@ -224,9 +223,17 @@ class UniFiSSHClient:
                         if not chunk:
                             break
                         collected_output += chunk
+                        
+                        # Check if we have the complete info output
+                        if command == "info" and "Status:" in collected_output:
+                            break
                     except asyncio.TimeoutError:
+                        # Got what we need, break out
                         break
 
+                # Terminate the process channel cleanly (don't send exit which closes SSH)
+                process.terminate()
+                
                 return collected_output
 
         except asyncio.TimeoutError as err:
@@ -269,14 +276,15 @@ class UniFiSSHClient:
         """Execute multiple commands in a single CLI session.
 
         SSH is already connected. This opens an interactive shell,
-        runs 'cli' to enter CLI mode, executes commands, then exits.
+        runs 'cli' to enter CLI mode, executes commands, then exits CLI.
         
         Sequence: 
         - cli (enter CLI mode)
         - commands
-        - exit (leave first CLI layer)
-        - exit (leave second CLI layer - shows "Terminated")
-        - exit (close SSH shell)
+        - exit (leave first CLI layer - goes to ">" prompt)
+        - exit (leave second CLI layer - shows "Terminated", back to shell)
+        
+        We do NOT send a third exit since that would close the SSH session.
         """
         await self._ensure_connected()
         assert self._conn is not None
@@ -299,19 +307,15 @@ class UniFiSSHClient:
                     process.stdin.write(f"{cmd}\n")
                     await asyncio.sleep(0.5)
                 
-                # Exit first CLI layer
+                # Exit first CLI layer (goes to ">" prompt)
                 process.stdin.write(f"{CMD_CLI_EXIT}\n")
                 await asyncio.sleep(0.3)
                 
-                # Exit second CLI layer (will print "Terminated")
+                # Exit second CLI layer (shows "Terminated", back at shell)
                 process.stdin.write(f"{CMD_CLI_EXIT}\n")
-                await asyncio.sleep(0.3)
-                
-                # Exit SSH shell
-                process.stdin.write(f"{CMD_CLI_EXIT}\n")
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.5)
 
-                # Now read output until process ends or timeout
+                # Read output with timeout - look for "Terminated" marker
                 deadline = asyncio.get_event_loop().time() + timeout
                 
                 while asyncio.get_event_loop().time() < deadline:
@@ -321,20 +325,23 @@ class UniFiSSHClient:
                             timeout=3.0,
                         )
                         if not chunk:
-                            # EOF - process ended (SSH shell closed)
-                            _LOGGER.debug("EOF reached, shell closed")
+                            _LOGGER.debug("EOF reached")
                             break
                         collected_output += chunk
                         _LOGGER.debug("Read chunk: %d bytes", len(chunk))
+                        
+                        # Stop reading once we see "Terminated"
+                        if "Terminated" in collected_output:
+                            _LOGGER.debug("Saw 'Terminated', done reading")
+                            break
                     except asyncio.TimeoutError:
-                        # No data for 3 seconds - send extra exit to ensure we close
-                        _LOGGER.debug("Read timeout, sending extra exit")
-                        try:
-                            process.stdin.write(f"{CMD_CLI_EXIT}\n")
-                        except Exception:
-                            pass
-                        continue
+                        # No more data coming, we're done
+                        _LOGGER.debug("Read timeout, assuming complete")
+                        break
 
+                # Terminate the process channel (don't send exit which closes SSH)
+                process.terminate()
+                
                 _LOGGER.debug("CLI output length: %d chars", len(collected_output))
                 _LOGGER.debug("CLI output:\n%s", collected_output[:3000] if len(collected_output) > 3000 else collected_output)
                 return collected_output
