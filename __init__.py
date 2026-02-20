@@ -146,12 +146,8 @@ def _async_register_services(hass: HomeAssistant) -> None:
         port: int | None = call.data.get(ATTR_PORT)
         device_ids: set[str] = set()
 
-        # Collect target device IDs from both call.data and call target
-        # When called from the UI/service dev tools, device_id is in the target
-        # When called from the card, it may be in either location
+        # Collect target device IDs from service data
         raw_ids = call.data.get("device_id")
-        if not raw_ids and hasattr(call, "target") and call.target:
-            raw_ids = call.target.get("device_id")
         if raw_ids:
             device_ids.update(
                 raw_ids if isinstance(raw_ids, list) else [raw_ids]

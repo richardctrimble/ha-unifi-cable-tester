@@ -3,7 +3,7 @@
  * Custom Lovelace card for displaying UniFi switch cable test results
  */
 
-const CARD_VERSION = "2.3.0";
+const CARD_VERSION = "2.4.0";
 
 // Status colors
 const STATUS_COLORS = {
@@ -109,6 +109,12 @@ class UnifiCableTesterCard extends HTMLElement {
   }
 
   _matchesDevice(entityId) {
+    // Prefer device_id matching via entity registry (reliable)
+    if (this._config.device_id && this._hass?.entities) {
+      const entry = this._hass.entities[entityId];
+      return entry?.device_id === this._config.device_id;
+    }
+    // Legacy fallback: match by switch_name prefix
     if (this._config.switch_name) {
       const name = this._config.switch_name.toLowerCase().replace(/[^a-z0-9]/g, "_");
       return entityId.toLowerCase().includes(name);
@@ -155,36 +161,14 @@ class UnifiCableTesterCard extends HTMLElement {
   _handleTestPort(portEntity) {
     if (!this._hass) return;
     
-    // Extract the switch prefix from the entity ID
-    // Entity format: sensor.{prefix}_port_{N}_cable_status
-    const entityMatch = portEntity.entityId.match(/^sensor\.(.+)_port_\d+/);
-    if (!entityMatch) {
-      console.error("Could not parse entity ID:", portEntity.entityId);
-      return;
-    }
-    const switchPrefix = entityMatch[1];
-    
-    // Find the Test All button for THIS switch to get the device_id
-    const entities = Object.keys(this._hass.states);
-    let targetDeviceId = null;
-    
-    for (const entityId of entities) {
-      if (entityId.startsWith("button.") && 
-          entityId.includes("test_all") &&
-          entityId.includes(switchPrefix)) {
-        // Found the button, get its device_id from entities registry
-        if (this._hass.entities && this._hass.entities[entityId]) {
-          targetDeviceId = this._hass.entities[entityId].device_id;
-        }
-        break;
-      }
-    }
-    
-    // Call the service to test a single port with device targeting
+    // Get device_id directly from the port sensor's entity registry entry
     const serviceData = { port: portEntity.port };
-    const target = targetDeviceId ? { device_id: targetDeviceId } : undefined;
+    const entityEntry = this._hass.entities?.[portEntity.entityId];
+    if (entityEntry?.device_id) {
+      serviceData.device_id = entityEntry.device_id;
+    }
     
-    this._hass.callService("unifi_cable_tester", "run_cable_test", serviceData, target);
+    this._hass.callService("unifi_cable_tester", "run_cable_test", serviceData);
   }
 
   _render() {
@@ -750,6 +734,8 @@ class UnifiCableTesterCardEditor extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._config = {};
+    this._hass = null;
+    this._initialized = false;
   }
 
   setConfig(config) {
@@ -759,7 +745,11 @@ class UnifiCableTesterCardEditor extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    // Only render on first hass assignment; avoid re-rendering on every
+    // state update which destroys the DOM and makes dropdowns unusable.
+    if (!this._initialized) {
+      this._render();
+    }
   }
 
   _detectSwitches() {
@@ -830,13 +820,16 @@ class UnifiCableTesterCardEditor extends HTMLElement {
   _render() {
     if (!this._hass) return;
 
+    this._initialized = true;
     const detectedSwitches = this._detectSwitches();
     
-    // Build switch options for dropdown
+    // Build switch options for dropdown — use device_id as value for reliable filtering
     let switchOptions = '<option value="">All Switches</option>';
+    const selectedId = this._config.device_id || '';
     for (const sw of detectedSwitches) {
-      const selected = this._config.switch_name === sw.prefix ? 'selected' : '';
-      switchOptions += `<option value="${sw.prefix}" ${selected}>${sw.friendlyName} (${sw.entityCount} ports)</option>`;
+      const value = sw.device_id || sw.prefix;
+      const selected = selectedId === value ? 'selected' : '';
+      switchOptions += `<option value="${value}" ${selected}>${sw.friendlyName} (${sw.entityCount} ports)</option>`;
     }
     
     // Show helpful message if no switches found
@@ -917,7 +910,7 @@ class UnifiCableTesterCardEditor extends HTMLElement {
       
       <div class="config-row">
         <label>Switch</label>
-        <select id="switch_name">
+        <select id="device_id">
           ${switchOptions}
         </select>
         <div class="detected-info">
@@ -952,7 +945,7 @@ class UnifiCableTesterCardEditor extends HTMLElement {
     `;
 
     // Bind events
-    const inputs = ['switch_name', 'title', 'columns', 'show_header', 'show_test_button', 'show_device_info'];
+    const inputs = ['device_id', 'title', 'columns', 'show_header', 'show_test_button', 'show_device_info'];
     inputs.forEach(id => {
       const el = this.shadowRoot.getElementById(id);
       if (el) {
