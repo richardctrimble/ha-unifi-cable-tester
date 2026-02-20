@@ -3,7 +3,7 @@
  * Custom Lovelace card for displaying UniFi switch cable test results
  */
 
-const CARD_VERSION = "2.1.0";
+const CARD_VERSION = "2.2.0";
 
 // Status colors
 const STATUS_COLORS = {
@@ -48,7 +48,6 @@ class UnifiCableTesterCard extends HTMLElement {
       show_header: config.show_header !== false,
       show_test_button: config.show_test_button !== false,
       show_device_info: config.show_device_info !== false,
-      compact: config.compact || false,
       columns: config.columns || 12,
       ...config,
     };
@@ -203,13 +202,12 @@ class UnifiCableTesterCard extends HTMLElement {
     const { ports, testRunStatus, device } = this._getEntities();
     const isRunning = testRunStatus?.state === "Running";
     const columns = this._config.columns;
-    const compact = this._config.compact;
 
     // Build the card HTML
     let html = `
       <style>
         :host {
-          --gap: ${compact ? "2px" : "3px"};
+          --gap: 3px;
         }
         ha-card {
           padding: 12px;
@@ -269,7 +267,7 @@ class UnifiCableTesterCard extends HTMLElement {
         .port {
           width: 100%;
           aspect-ratio: 1;
-          border-radius: ${compact ? "3px" : "4px"};
+          border-radius: 4px;
           display: flex;
           flex-direction: column;
           align-items: center;
@@ -277,7 +275,7 @@ class UnifiCableTesterCard extends HTMLElement {
           cursor: pointer;
           transition: transform 0.1s, box-shadow 0.1s;
           position: relative;
-          font-size: ${compact ? "0.65em" : "0.75em"};
+          font-size: 0.75em;
           box-shadow: 0 1px 2px rgba(0,0,0,0.25);
           user-select: none;
           line-height: 1.1;
@@ -771,47 +769,66 @@ class UnifiCableTesterCardEditor extends HTMLElement {
   }
 
   _detectSwitches() {
-    // Auto-detect switches by finding cable_status entities and grouping by prefix
+    // Use HA entity + device registries for reliable detection
     if (!this._hass) return [];
-    
-    const switches = new Map(); // prefix -> { name, entityCount, sampleEntity }
-    const entities = Object.keys(this._hass.states);
-    
-    for (const entityId of entities) {
-      // Match entities with cable_status and port_ in the name
-      // More lenient matching than strict regex
-      if (entityId.startsWith("sensor.") && 
-          entityId.includes("cable_status") &&
-          entityId.includes("_port_")) {
-        
-        // Extract everything before _port_N_cable_status
-        const portMatch = entityId.match(/^sensor\.(.+)_port_(\d+)/);
-        if (portMatch) {
-          const prefix = portMatch[1];
-          if (!switches.has(prefix)) {
-            // Try to create a friendly name from the prefix
-            let friendlyName = prefix
-              .replace(/_/g, ' ')
-              .replace(/\b\w/g, c => c.toUpperCase());
-            
-            // Check if it looks like an IP address pattern
-            const ipMatch = prefix.match(/(\d+)_(\d+)_(\d+)_(\d+)/);
-            if (ipMatch) {
-              friendlyName = `Switch ${ipMatch[1]}.${ipMatch[2]}.${ipMatch[3]}.${ipMatch[4]}`;
-            }
-            
-            switches.set(prefix, {
-              prefix,
-              friendlyName,
-              entityCount: 0,
-            });
-          }
-          switches.get(prefix).entityCount++;
+
+    const switches = new Map(); // device_id -> { ... }
+
+    // Method 1: Use entity/device registries (preferred)
+    if (this._hass.entities && this._hass.devices) {
+      for (const [entityId, entry] of Object.entries(this._hass.entities)) {
+        if (!entityId.startsWith("sensor.")) continue;
+        if (!entry.platform || entry.platform !== "unifi_cable_tester") continue;
+        if (!entityId.includes("cable_status") || !entityId.includes("port_")) continue;
+        if (!entry.device_id) continue;
+
+        if (!switches.has(entry.device_id)) {
+          const device = this._hass.devices[entry.device_id];
+          const deviceName = device
+            ? (device.name_by_user || device.name || "UniFi Switch")
+            : "UniFi Switch";
+          
+          // Build an entity prefix for filtering (everything before _port_N)
+          const prefixMatch = entityId.match(/^sensor\.(.+)_port_\d+/);
+          const prefix = prefixMatch ? prefixMatch[1] : entry.device_id;
+
+          switches.set(entry.device_id, {
+            device_id: entry.device_id,
+            prefix,
+            friendlyName: deviceName,
+            entityCount: 0,
+          });
         }
+        switches.get(entry.device_id).entityCount++;
       }
     }
-    
-    return Array.from(switches.values()).sort((a, b) => 
+
+    // Method 2: Fallback to entity_id pattern matching
+    if (switches.size === 0) {
+      const prefixes = new Map();
+      for (const entityId of Object.keys(this._hass.states)) {
+        if (entityId.startsWith("sensor.") &&
+            entityId.includes("cable_status") &&
+            entityId.includes("_port_")) {
+          const m = entityId.match(/^sensor\.(.+)_port_(\d+)/);
+          if (m) {
+            const prefix = m[1];
+            if (!prefixes.has(prefix)) {
+              let name = prefix.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+              const ip = prefix.match(/(\d+)_(\d+)_(\d+)_(\d+)/);
+              if (ip) name = `Switch ${ip[1]}.${ip[2]}.${ip[3]}.${ip[4]}`;
+              prefixes.set(prefix, { prefix, friendlyName: name, entityCount: 0 });
+            }
+            prefixes.get(prefix).entityCount++;
+          }
+        }
+      }
+      return Array.from(prefixes.values()).sort((a, b) =>
+        a.friendlyName.localeCompare(b.friendlyName)
+      );
+    }
+
+    return Array.from(switches.values()).sort((a, b) =>
       a.friendlyName.localeCompare(b.friendlyName)
     );
   }
@@ -938,15 +955,10 @@ class UnifiCableTesterCardEditor extends HTMLElement {
         <input type="checkbox" id="show_device_info" ${this._config.show_device_info !== false ? 'checked' : ''}>
         <label for="show_device_info">Show Device Info</label>
       </div>
-      
-      <div class="config-row checkbox-row">
-        <input type="checkbox" id="compact" ${this._config.compact ? 'checked' : ''}>
-        <label for="compact">Compact Mode</label>
-      </div>
     `;
 
     // Bind events
-    const inputs = ['switch_name', 'title', 'columns', 'show_header', 'show_test_button', 'show_device_info', 'compact'];
+    const inputs = ['switch_name', 'title', 'columns', 'show_header', 'show_test_button', 'show_device_info'];
     inputs.forEach(id => {
       const el = this.shadowRoot.getElementById(id);
       if (el) {

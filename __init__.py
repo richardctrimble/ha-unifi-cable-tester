@@ -130,7 +130,8 @@ SERVICE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_PORT): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=52)
         ),
-    }
+    },
+    extra=vol.ALLOW_EXTRA,
 )
 
 
