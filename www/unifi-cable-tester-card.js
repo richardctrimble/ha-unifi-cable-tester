@@ -3,7 +3,7 @@
  * Custom Lovelace card for displaying UniFi switch cable test results
  */
 
-const CARD_VERSION = "1.1.1";
+const CARD_VERSION = "2.1.0";
 
 // Status colors
 const STATUS_COLORS = {
@@ -13,6 +13,7 @@ const STATUS_COLORS = {
   "Impedance Mismatch": "#FF9800", // Orange
   "Fiber": "#2196F3",        // Blue
   "Not Tested": "#9E9E9E",   // Gray
+  "Test Failed": "#B71C1C",   // Dark Red
   "Unknown": "#757575",      // Dark Gray
   "Testing": "#FFC107",      // Amber (animated)
 };
@@ -25,6 +26,7 @@ const STATUS_ICONS = {
   "Impedance Mismatch": "mdi:signal-variant",
   "Fiber": "mdi:fiber-manual-record",
   "Not Tested": "mdi:help-circle-outline",
+  "Test Failed": "mdi:alert-circle",
   "Unknown": "mdi:help-circle",
   "Testing": "mdi:loading",
 };
@@ -36,14 +38,7 @@ class UnifiCableTesterCard extends HTMLElement {
     this._config = {};
     this._hass = null;
     this._selectedPort = null;
-  }
-
-  static get properties() {
-    return {
-      _config: {},
-      _hass: {},
-      _selectedPort: {},
-    };
+    this._renderScheduled = false;
   }
 
   setConfig(config) {
@@ -57,12 +52,22 @@ class UnifiCableTesterCard extends HTMLElement {
       columns: config.columns || 12,
       ...config,
     };
-    this._render();
+    this._scheduleRender();
   }
 
   set hass(hass) {
     this._hass = hass;
-    this._render();
+    this._scheduleRender();
+  }
+
+  // Debounce rendering to avoid full DOM rebuild on every hass update
+  _scheduleRender() {
+    if (this._renderScheduled) return;
+    this._renderScheduled = true;
+    requestAnimationFrame(() => {
+      this._renderScheduled = false;
+      this._render();
+    });
   }
 
   _getEntities() {
@@ -72,9 +77,6 @@ class UnifiCableTesterCard extends HTMLElement {
     const ports = [];
     let testRunStatus = null;
     let device = null;
-
-    // Find entities by device_id or switch_name pattern
-    const pattern = this._config.device_id || this._config.switch_name || "";
 
     for (const entityId of entities) {
       const state = this._hass.states[entityId];
@@ -86,7 +88,7 @@ class UnifiCableTesterCard extends HTMLElement {
           entityId.includes("port_")) {
         
         // Check if this entity belongs to our device
-        if (this._matchesDevice(entityId, state)) {
+        if (this._matchesDevice(entityId)) {
           const portMatch = entityId.match(/port_(\d+)/);
           if (portMatch) {
             ports.push({
@@ -100,18 +102,8 @@ class UnifiCableTesterCard extends HTMLElement {
       }
 
       // Find test run status sensor
-      if (entityId.includes("test_run_status") && this._matchesDevice(entityId, state)) {
+      if (entityId.includes("test_run_status") && this._matchesDevice(entityId)) {
         testRunStatus = state;
-      }
-
-      // Find device info from any matching entity
-      if (this._matchesDevice(entityId, state) && state.attributes.device_model) {
-        device = {
-          name: state.attributes.device_name || "UniFi Switch",
-          model: state.attributes.device_model || "Unknown",
-          mac: state.attributes.device_mac || "",
-          version: state.attributes.device_version || "",
-        };
       }
     }
 
@@ -121,17 +113,19 @@ class UnifiCableTesterCard extends HTMLElement {
     return { ports, testRunStatus, device };
   }
 
-  _matchesDevice(entityId, state) {
-    // Match by device_id in attributes or entity naming pattern
-    if (this._config.device_id) {
-      return state.attributes.device_id === this._config.device_id ||
-             entityId.includes(this._config.device_id);
-    }
+  _matchesDevice(entityId) {
     if (this._config.switch_name) {
       const name = this._config.switch_name.toLowerCase().replace(/[^a-z0-9]/g, "_");
       return entityId.toLowerCase().includes(name);
     }
     return true; // Show all if no filter specified
+  }
+
+  // Escape HTML to prevent XSS
+  _escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
   }
 
   _getStatusColor(status) {
@@ -142,25 +136,9 @@ class UnifiCableTesterCard extends HTMLElement {
     return STATUS_ICONS[status] || STATUS_ICONS["Unknown"];
   }
 
-  _formatPairDetails(attributes) {
-    const pairs = ["pair_a", "pair_b", "pair_c", "pair_d"];
-    const details = [];
-    
-    for (const pair of pairs) {
-      const status = attributes[`${pair}_status`];
-      const length = attributes[`${pair}_length`];
-      
-      if (status && status !== "Not Tested") {
-        const lengthStr = length ? ` (${length}m)` : "";
-        details.push(`${pair.replace("_", " ").toUpperCase()}: ${status}${lengthStr}`);
-      }
-    }
-    
-    return details;
-  }
-
   _handlePortClick(port) {
-    this._selectedPort = this._selectedPort === port.port ? null : port.port;
+    // Store entityId to uniquely identify port across multiple switches
+    this._selectedPort = this._selectedPort === port.entityId ? null : port.entityId;
     this._render();
   }
 
@@ -172,20 +150,48 @@ class UnifiCableTesterCard extends HTMLElement {
     for (const entityId of entities) {
       if (entityId.startsWith("button.") && 
           entityId.includes("test_all") &&
-          this._matchesDevice(entityId, this._hass.states[entityId])) {
+          this._matchesDevice(entityId)) {
         this._hass.callService("button", "press", { entity_id: entityId });
         return;
       }
     }
   }
 
-  _handleTestPort(port) {
+  _handleTestPort(portEntity) {
     if (!this._hass) return;
     
-    // Call the service to test a single port
-    this._hass.callService("unifi_cable_tester", "run_cable_test", {
-      port: port,
-    });
+    // Extract the switch prefix from the entity ID
+    // Entity format: sensor.{prefix}_port_{N}_cable_status
+    const entityMatch = portEntity.entityId.match(/^sensor\.(.+)_port_\d+/);
+    if (!entityMatch) {
+      console.error("Could not parse entity ID:", portEntity.entityId);
+      return;
+    }
+    const switchPrefix = entityMatch[1];
+    
+    // Find the Test All button for THIS switch to get the device_id
+    const entities = Object.keys(this._hass.states);
+    let targetDeviceId = null;
+    
+    for (const entityId of entities) {
+      if (entityId.startsWith("button.") && 
+          entityId.includes("test_all") &&
+          entityId.includes(switchPrefix)) {
+        // Found the button, get its device_id from entities registry
+        if (this._hass.entities && this._hass.entities[entityId]) {
+          targetDeviceId = this._hass.entities[entityId].device_id;
+        }
+        break;
+      }
+    }
+    
+    // Call the service to test a single port with device targeting
+    const serviceData = { port: portEntity.port };
+    if (targetDeviceId) {
+      serviceData.device_id = targetDeviceId;
+    }
+    
+    this._hass.callService("unifi_cable_tester", "run_cable_test", serviceData);
   }
 
   _render() {
@@ -203,29 +209,28 @@ class UnifiCableTesterCard extends HTMLElement {
     let html = `
       <style>
         :host {
-          --port-size: ${compact ? "40px" : "50px"};
-          --gap: 6px;
+          --gap: ${compact ? "2px" : "3px"};
         }
         ha-card {
-          padding: 16px;
+          padding: 12px;
         }
         .card-header {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          margin-bottom: 16px;
+          margin-bottom: 8px;
         }
         .card-title {
-          font-size: 1.2em;
-          font-weight: 500;
+          font-size: 1em;
+          font-weight: 600;
         }
         .device-info {
-          font-size: 0.85em;
+          font-size: 0.8em;
           color: var(--secondary-text-color);
-          margin-bottom: 12px;
-          padding: 8px 12px;
+          margin-bottom: 8px;
+          padding: 4px 8px;
           background: var(--primary-background-color);
-          border-radius: 8px;
+          border-radius: 6px;
         }
         .device-info .model {
           font-weight: 500;
@@ -233,22 +238,22 @@ class UnifiCableTesterCard extends HTMLElement {
         .test-status {
           display: flex;
           align-items: center;
-          gap: 8px;
-          padding: 8px 12px;
-          border-radius: 8px;
-          margin-bottom: 12px;
-          font-size: 0.9em;
+          gap: 6px;
+          padding: 4px 8px;
+          border-radius: 6px;
+          margin-bottom: 8px;
+          font-size: 0.8em;
         }
         .test-status.running {
-          background: rgba(255, 193, 7, 0.2);
+          background: rgba(255, 193, 7, 0.15);
           color: #FFC107;
         }
         .test-status.completed {
-          background: rgba(76, 175, 80, 0.2);
+          background: rgba(76, 175, 80, 0.15);
           color: #4CAF50;
         }
         .test-status.failed {
-          background: rgba(244, 67, 54, 0.2);
+          background: rgba(244, 67, 54, 0.15);
           color: #F44336;
         }
         .test-status.idle {
@@ -259,112 +264,151 @@ class UnifiCableTesterCard extends HTMLElement {
           display: grid;
           grid-template-columns: repeat(${columns}, 1fr);
           gap: var(--gap);
-          margin-bottom: 16px;
+          margin-bottom: 10px;
         }
         .port {
           width: 100%;
           aspect-ratio: 1;
-          border-radius: 8px;
+          border-radius: ${compact ? "3px" : "4px"};
           display: flex;
           flex-direction: column;
           align-items: center;
           justify-content: center;
           cursor: pointer;
-          transition: all 0.2s ease;
+          transition: transform 0.1s, box-shadow 0.1s;
           position: relative;
-          font-size: ${compact ? "0.75em" : "0.85em"};
-          box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+          font-size: ${compact ? "0.65em" : "0.75em"};
+          box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+          user-select: none;
+          line-height: 1.1;
         }
         .port:hover {
-          transform: scale(1.05);
-          box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+          transform: scale(1.1);
+          box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+          z-index: 1;
+        }
+        .port:active {
+          transform: scale(0.95);
         }
         .port.selected {
-          outline: 3px solid var(--primary-color);
-          outline-offset: 2px;
+          outline: 2px solid var(--primary-color);
+          outline-offset: 1px;
+          z-index: 2;
         }
         .port .port-number {
-          font-weight: bold;
+          font-weight: 700;
           font-size: 1.1em;
         }
         .port .port-status {
-          font-size: 0.8em;
-          opacity: 0.9;
+          font-size: 0.7em;
+          opacity: 0.85;
           text-align: center;
           max-width: 100%;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
-          padding: 0 2px;
+          padding: 0 1px;
+          line-height: 1;
         }
         .port.testing {
           animation: pulse 1s infinite;
         }
         @keyframes pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.6; }
+          50% { opacity: 0.5; }
         }
         .port-details {
           background: var(--primary-background-color);
-          border-radius: 8px;
-          padding: 12px;
-          margin-bottom: 12px;
+          border-radius: 6px;
+          padding: 10px;
+          margin-bottom: 10px;
+          font-size: 0.85em;
         }
         .port-details h4 {
           margin: 0 0 8px 0;
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
+          font-size: 0.95em;
+        }
+        .port-details h5 {
+          margin: 8px 0 4px 0;
+          font-size: 0.85em;
+          color: var(--secondary-text-color);
         }
         .port-details .status-badge {
-          padding: 2px 8px;
-          border-radius: 4px;
+          padding: 1px 6px;
+          border-radius: 3px;
           font-size: 0.85em;
           font-weight: 500;
         }
+        .port-details .connection-info {
+          font-size: 0.9em;
+          line-height: 1.5;
+        }
+        .port-details .connection-info div {
+          margin-bottom: 1px;
+        }
+        .port-details .pairs-section {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid var(--divider-color);
+        }
         .port-details .pairs {
           display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          gap: 8px;
-          margin-top: 8px;
+          grid-template-columns: 1fr 1fr;
+          gap: 4px;
         }
         .port-details .pair {
-          padding: 6px 10px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 8px;
           background: var(--card-background-color);
-          border-radius: 6px;
+          border-radius: 4px;
           font-size: 0.85em;
         }
         .port-details .pair-label {
           font-weight: 500;
           color: var(--secondary-text-color);
+          font-size: 0.9em;
         }
-        .port-details .connection-info {
-          margin-top: 12px;
-          padding-top: 12px;
-          border-top: 1px solid var(--divider-color);
+        .port-details .pair-status {
+          font-weight: 500;
+        }
+        .port-details .pair-length {
+          color: var(--secondary-text-color);
+          font-size: 0.9em;
+        }
+        .port-details .fiber-info,
+        .port-details .not-tested-info {
+          padding: 8px;
+          margin-top: 8px;
+          border-radius: 4px;
+          background: var(--card-background-color);
           font-size: 0.85em;
           color: var(--secondary-text-color);
         }
         .actions {
           display: flex;
-          gap: 8px;
+          gap: 6px;
           flex-wrap: wrap;
         }
         .action-btn {
           background: var(--primary-color);
           color: var(--text-primary-color);
           border: none;
-          padding: 8px 16px;
-          border-radius: 8px;
+          padding: 5px 12px;
+          border-radius: 6px;
           cursor: pointer;
-          font-size: 0.9em;
-          display: flex;
+          font-size: 0.8em;
+          display: inline-flex;
           align-items: center;
-          gap: 6px;
-          transition: background 0.2s;
+          gap: 4px;
+          transition: filter 0.15s;
         }
         .action-btn:hover {
-          background: var(--primary-color);
           filter: brightness(1.1);
         }
         .action-btn:disabled {
@@ -378,30 +422,31 @@ class UnifiCableTesterCard extends HTMLElement {
         .legend {
           display: flex;
           flex-wrap: wrap;
-          gap: 12px;
-          margin-top: 12px;
-          padding-top: 12px;
+          gap: 8px;
+          margin-top: 8px;
+          padding-top: 8px;
           border-top: 1px solid var(--divider-color);
-          font-size: 0.8em;
+          font-size: 0.7em;
         }
         .legend-item {
           display: flex;
           align-items: center;
-          gap: 4px;
+          gap: 3px;
         }
         .legend-color {
-          width: 12px;
-          height: 12px;
-          border-radius: 3px;
+          width: 8px;
+          height: 8px;
+          border-radius: 2px;
         }
         .no-ports {
           text-align: center;
-          padding: 32px;
+          padding: 24px;
           color: var(--secondary-text-color);
+          font-size: 0.9em;
         }
         .loading {
           text-align: center;
-          padding: 32px;
+          padding: 24px;
           color: var(--secondary-text-color);
         }
       </style>
@@ -412,20 +457,23 @@ class UnifiCableTesterCard extends HTMLElement {
     if (this._config.show_header) {
       html += `
         <div class="card-header">
-          <div class="card-title">${this._config.title}</div>
+          <div class="card-title">${this._escapeHtml(this._config.title)}</div>
         </div>
       `;
     }
 
-    // Device info
-    if (this._config.show_device_info && device) {
-      html += `
-        <div class="device-info">
-          <span class="model">${device.model}</span>
-          ${device.name ? ` - ${device.name}` : ""}
-          ${device.mac ? `<br><small>${device.mac}</small>` : ""}
-        </div>
-      `;
+    // Device info (from HA device registry)
+    if (this._config.show_device_info) {
+      const deviceInfo = this._getDeviceInfo(ports);
+      if (deviceInfo) {
+        html += `
+          <div class="device-info">
+            <span class="model">${this._escapeHtml(deviceInfo.model)}</span>
+            ${deviceInfo.name ? ` &ndash; ${this._escapeHtml(deviceInfo.name)}` : ""}
+            ${deviceInfo.mac ? `<br><small>${this._escapeHtml(deviceInfo.mac)}${deviceInfo.version ? ` &bull; FW ${this._escapeHtml(deviceInfo.version)}` : ""}</small>` : ""}
+          </div>
+        `;
+      }
     }
 
     // Test status
@@ -456,7 +504,7 @@ class UnifiCableTesterCard extends HTMLElement {
       
       for (const port of ports) {
         const color = this._getStatusColor(port.state);
-        const isSelected = this._selectedPort === port.port;
+        const isSelected = this._selectedPort === port.entityId;
         const isTesting = isRunning && port.state === "Testing";
         
         // Determine text color based on background brightness
@@ -465,7 +513,7 @@ class UnifiCableTesterCard extends HTMLElement {
         html += `
           <div class="port ${isSelected ? 'selected' : ''} ${isTesting ? 'testing' : ''}"
                style="background-color: ${color}; color: ${textColor};"
-               data-port="${port.port}">
+               data-entity="${port.entityId}">
             <span class="port-number">${port.port}</span>
             <span class="port-status">${this._truncateStatus(port.state)}</span>
           </div>
@@ -476,7 +524,7 @@ class UnifiCableTesterCard extends HTMLElement {
 
       // Selected port details
       if (this._selectedPort !== null) {
-        const selectedPortData = ports.find(p => p.port === this._selectedPort);
+        const selectedPortData = ports.find(p => p.entityId === this._selectedPort);
         if (selectedPortData) {
           const attrs = selectedPortData.attributes;
           const color = this._getStatusColor(selectedPortData.state);
@@ -485,58 +533,69 @@ class UnifiCableTesterCard extends HTMLElement {
             <div class="port-details">
               <h4>
                 Port ${selectedPortData.port}
-                <span class="status-badge" style="background: ${color}; color: ${this._getContrastColor(color)}">
+                <span class="status-badge" style="background:${color};color:${this._getContrastColor(color)}">
                   ${selectedPortData.state}
                 </span>
               </h4>
           `;
 
-          // Pair details
+          // Connection info - show first
+          html += `<div class="connection-info">`;
+          if (attrs.port_connected !== undefined && attrs.port_connected !== null) {
+            const connIcon = attrs.port_connected ? '🟢' : '🔴';
+            html += `<div><strong>Connected:</strong> ${connIcon} ${attrs.port_connected ? "Yes" : "No"}</div>`;
+          }
+          if (attrs.port_speed) {
+            html += `<div><strong>Speed:</strong> ${this._escapeHtml(String(attrs.port_speed))}</div>`;
+          }
+          if (attrs.port_speed_mbps) {
+            html += `<div><strong>Link Speed:</strong> ${attrs.port_speed_mbps} Mbps</div>`;
+          }
+          if (attrs.port_type) {
+            html += `<div><strong>Type:</strong> ${this._escapeHtml(String(attrs.port_type))}</div>`;
+          }
+          if (attrs.last_tested) {
+            const lastTested = new Date(attrs.last_tested);
+            html += `<div><strong>Last Tested:</strong> ${lastTested.toLocaleString()}</div>`;
+          }
+          html += `</div>`;
+
+          // Pair details (2-column grid for compactness)
           if (selectedPortData.state !== "Fiber" && selectedPortData.state !== "Not Tested") {
-            html += `<div class="pairs">`;
+            html += `<div class="pairs-section"><h5>Cable Pairs</h5><div class="pairs">`;
+            // Use pair_1, pair_2, etc. (numbers, not letters)
             const pairs = [
-              { key: "pair_a", label: "Pair A" },
-              { key: "pair_b", label: "Pair B" },
-              { key: "pair_c", label: "Pair C" },
-              { key: "pair_d", label: "Pair D" },
+              { key: "pair_1", label: "Pair A (1-2)" },
+              { key: "pair_2", label: "Pair B (3-6)" },
+              { key: "pair_3", label: "Pair C (4-5)" },
+              { key: "pair_4", label: "Pair D (7-8)" },
             ];
             
             for (const pair of pairs) {
               const status = attrs[`${pair.key}_status`] || "N/A";
               const length = attrs[`${pair.key}_length`];
-              const lengthStr = length ? ` (${length}m)` : "";
+              const lengthStr = length !== null && length !== undefined ? `${length}m` : "-";
               const pairColor = this._getStatusColor(status);
               
               html += `
                 <div class="pair">
-                  <span class="pair-label">${pair.label}:</span>
-                  <span style="color: ${pairColor}">${status}${lengthStr}</span>
+                  <span class="pair-label">${pair.label}</span>
+                  <span class="pair-status" style="color:${pairColor}">${status} ${lengthStr !== "-" ? lengthStr : ""}</span>
                 </div>
               `;
             }
-            html += `</div>`;
-          }
-
-          // Connection info
-          if (attrs.connected !== undefined || attrs.speed) {
-            html += `<div class="connection-info">`;
-            if (attrs.connected !== undefined) {
-              html += `<strong>Connected:</strong> ${attrs.connected ? "Yes" : "No"} `;
-            }
-            if (attrs.speed) {
-              html += `<strong>Speed:</strong> ${attrs.speed} `;
-            }
-            if (attrs.port_type) {
-              html += `<strong>Type:</strong> ${attrs.port_type}`;
-            }
-            html += `</div>`;
+            html += `</div></div>`;
+          } else if (selectedPortData.state === "Fiber") {
+            html += `<div class="fiber-info">🔵 This is a fiber/SFP port - cable testing not applicable</div>`;
+          } else {
+            html += `<div class="not-tested-info">⚪ No test data - click "Test Port" to run cable diagnostics</div>`;
           }
 
           // Test single port button
           if (this._config.show_test_button) {
             html += `
               <div style="margin-top: 12px;">
-                <button class="action-btn secondary" data-action="test-port" data-port="${selectedPortData.port}" ${isRunning ? 'disabled' : ''}>
+                <button class="action-btn secondary" data-action="test-port" data-entity="${selectedPortData.entityId}" ${isRunning ? 'disabled' : ''}>
                   <ha-icon icon="mdi:ethernet-cable"></ha-icon>
                   Test Port ${selectedPortData.port}
                 </button>
@@ -564,6 +623,10 @@ class UnifiCableTesterCard extends HTMLElement {
             <ha-icon icon="mdi:play-circle"></ha-icon>
             ${isRunning ? 'Testing...' : 'Test All Cables'}
           </button>
+          <button class="action-btn secondary" data-action="refresh">
+            <ha-icon icon="mdi:refresh"></ha-icon>
+            Refresh Status
+          </button>
         </div>
       `;
     }
@@ -587,8 +650,8 @@ class UnifiCableTesterCard extends HTMLElement {
     // Add event listeners
     this.shadowRoot.querySelectorAll('.port').forEach(el => {
       el.addEventListener('click', () => {
-        const port = parseInt(el.dataset.port);
-        const portData = ports.find(p => p.port === port);
+        const entityId = el.dataset.entity;
+        const portData = ports.find(p => p.entityId === entityId);
         if (portData) {
           this._handlePortClick(portData);
         }
@@ -599,10 +662,17 @@ class UnifiCableTesterCard extends HTMLElement {
       el.addEventListener('click', () => this._handleTestAll());
     });
 
+    this.shadowRoot.querySelectorAll('[data-action="refresh"]').forEach(el => {
+      el.addEventListener('click', () => this._handleRefresh());
+    });
+
     this.shadowRoot.querySelectorAll('[data-action="test-port"]').forEach(el => {
       el.addEventListener('click', () => {
-        const port = parseInt(el.dataset.port);
-        this._handleTestPort(port);
+        const entityId = el.dataset.entity;
+        const portData = ports.find(p => p.entityId === entityId);
+        if (portData) {
+          this._handleTestPort(portData);
+        }
       });
     });
   }
@@ -611,8 +681,43 @@ class UnifiCableTesterCard extends HTMLElement {
     const shortNames = {
       "Impedance Mismatch": "Impedance",
       "Not Tested": "N/T",
+      "Test Failed": "Failed",
     };
     return shortNames[status] || status;
+  }
+
+  // Look up device info from the HA device registry
+  _getDeviceInfo(ports) {
+    if (!this._hass || !this._hass.devices || !this._hass.entities || ports.length === 0) return null;
+
+    // Get the device_id from the first port entity via the entity registry
+    const firstEntityId = ports[0].entityId;
+    const entityEntry = this._hass.entities[firstEntityId];
+    if (!entityEntry || !entityEntry.device_id) return null;
+
+    const device = this._hass.devices[entityEntry.device_id];
+    if (!device) return null;
+
+    return {
+      name: device.name_by_user || device.name || "",
+      model: device.model || "",
+      mac: (device.connections || []).find(c => c[0] === "mac")?.[1] || "",
+      version: device.sw_version || "",
+    };
+  }
+
+  // Refresh port status by pressing the refresh button
+  _handleRefresh() {
+    if (!this._hass) return;
+    const entities = Object.keys(this._hass.states);
+    for (const entityId of entities) {
+      if (entityId.startsWith("button.") &&
+          entityId.includes("refresh") &&
+          this._matchesDevice(entityId)) {
+        this._hass.callService("button", "press", { entity_id: entityId });
+        return;
+      }
+    }
   }
 
   _getContrastColor(hexColor) {
@@ -673,29 +778,36 @@ class UnifiCableTesterCardEditor extends HTMLElement {
     const entities = Object.keys(this._hass.states);
     
     for (const entityId of entities) {
-      // Match: sensor.XXXX_port_N_cable_status
-      const match = entityId.match(/^sensor\.(.+)_port_\d+_cable_status$/);
-      if (match) {
-        const prefix = match[1];
-        if (!switches.has(prefix)) {
-          // Try to create a friendly name from the prefix
-          let friendlyName = prefix
-            .replace(/_/g, ' ')
-            .replace(/\b\w/g, c => c.toUpperCase());
-          
-          // Check if it looks like an IP address pattern
-          const ipMatch = prefix.match(/(\d+)_(\d+)_(\d+)_(\d+)/);
-          if (ipMatch) {
-            friendlyName = `Switch ${ipMatch[1]}.${ipMatch[2]}.${ipMatch[3]}.${ipMatch[4]}`;
+      // Match entities with cable_status and port_ in the name
+      // More lenient matching than strict regex
+      if (entityId.startsWith("sensor.") && 
+          entityId.includes("cable_status") &&
+          entityId.includes("_port_")) {
+        
+        // Extract everything before _port_N_cable_status
+        const portMatch = entityId.match(/^sensor\.(.+)_port_(\d+)/);
+        if (portMatch) {
+          const prefix = portMatch[1];
+          if (!switches.has(prefix)) {
+            // Try to create a friendly name from the prefix
+            let friendlyName = prefix
+              .replace(/_/g, ' ')
+              .replace(/\b\w/g, c => c.toUpperCase());
+            
+            // Check if it looks like an IP address pattern
+            const ipMatch = prefix.match(/(\d+)_(\d+)_(\d+)_(\d+)/);
+            if (ipMatch) {
+              friendlyName = `Switch ${ipMatch[1]}.${ipMatch[2]}.${ipMatch[3]}.${ipMatch[4]}`;
+            }
+            
+            switches.set(prefix, {
+              prefix,
+              friendlyName,
+              entityCount: 0,
+            });
           }
-          
-          switches.set(prefix, {
-            prefix,
-            friendlyName,
-            entityCount: 0,
-          });
+          switches.get(prefix).entityCount++;
         }
-        switches.get(prefix).entityCount++;
       }
     }
     
@@ -725,6 +837,7 @@ class UnifiCableTesterCardEditor extends HTMLElement {
       <style>
         :host {
           display: block;
+          max-width: 400px;
         }
         .config-row {
           margin-bottom: 16px;
@@ -735,9 +848,10 @@ class UnifiCableTesterCardEditor extends HTMLElement {
           font-weight: 500;
           font-size: 14px;
         }
-        .config-row input, .config-row select {
+        .config-row input[type="text"],
+        .config-row select {
           width: 100%;
-          max-width: 100%;
+          max-width: 300px;
           padding: 8px 12px;
           border: 1px solid var(--divider-color, #ccc);
           border-radius: 4px;
@@ -758,6 +872,14 @@ class UnifiCableTesterCardEditor extends HTMLElement {
         }
         .config-row input[type="number"] {
           width: 80px;
+          max-width: 80px;
+          padding: 8px 12px;
+          border: 1px solid var(--divider-color, #ccc);
+          border-radius: 4px;
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color, #000);
+          font-size: 14px;
+          box-sizing: border-box;
         }
         .checkbox-row {
           display: flex;
