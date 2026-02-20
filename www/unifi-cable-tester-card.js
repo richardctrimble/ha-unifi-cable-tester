@@ -3,7 +3,7 @@
  * Custom Lovelace card for displaying UniFi switch cable test results
  */
 
-const CARD_VERSION = "1.1.0";
+const CARD_VERSION = "1.1.1";
 
 // Status colors
 const STATUS_COLORS = {
@@ -723,6 +723,9 @@ class UnifiCableTesterCardEditor extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       <style>
+        :host {
+          display: block;
+        }
         .config-row {
           margin-bottom: 16px;
         }
@@ -730,22 +733,38 @@ class UnifiCableTesterCardEditor extends HTMLElement {
           display: block;
           margin-bottom: 4px;
           font-weight: 500;
+          font-size: 14px;
         }
         .config-row input, .config-row select {
           width: 100%;
-          padding: 8px;
-          border: 1px solid var(--divider-color);
+          max-width: 100%;
+          padding: 8px 12px;
+          border: 1px solid var(--divider-color, #ccc);
           border-radius: 4px;
-          background: var(--card-background-color);
-          color: var(--primary-text-color);
+          background: var(--card-background-color, #fff);
+          color: var(--primary-text-color, #000);
+          font-size: 14px;
+          box-sizing: border-box;
+        }
+        .config-row input:focus, .config-row select:focus {
+          outline: none;
+          border-color: var(--primary-color, #03a9f4);
         }
         .config-row input[type="checkbox"] {
-          width: auto;
+          width: 18px;
+          height: 18px;
           margin-right: 8px;
+          padding: 0;
+        }
+        .config-row input[type="number"] {
+          width: 80px;
         }
         .checkbox-row {
           display: flex;
           align-items: center;
+        }
+        .checkbox-row label {
+          margin-bottom: 0;
         }
         .warning {
           background: rgba(255, 152, 0, 0.2);
