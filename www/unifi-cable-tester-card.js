@@ -3,19 +3,17 @@
  * Custom Lovelace card for displaying UniFi switch cable test results
  */
 
-const CARD_VERSION = "2.2.0";
+const CARD_VERSION = "2.3.0";
 
 // Status colors
 const STATUS_COLORS = {
   "OK": "#4CAF50",           // Green
   "Open": "#F44336",         // Red
   "Short": "#FF5722",        // Deep Orange
-  "Impedance Mismatch": "#FF9800", // Orange
   "Fiber": "#2196F3",        // Blue
   "Not Tested": "#9E9E9E",   // Gray
   "Test Failed": "#B71C1C",   // Dark Red
   "Unknown": "#757575",      // Dark Gray
-  "Testing": "#FFC107",      // Amber (animated)
 };
 
 // Status icons
@@ -23,12 +21,10 @@ const STATUS_ICONS = {
   "OK": "mdi:check-circle",
   "Open": "mdi:lan-disconnect",
   "Short": "mdi:flash-alert",
-  "Impedance Mismatch": "mdi:signal-variant",
   "Fiber": "mdi:fiber-manual-record",
   "Not Tested": "mdi:help-circle-outline",
   "Test Failed": "mdi:alert-circle",
   "Unknown": "mdi:help-circle",
-  "Testing": "mdi:loading",
 };
 
 class UnifiCableTesterCard extends HTMLElement {
@@ -186,11 +182,9 @@ class UnifiCableTesterCard extends HTMLElement {
     
     // Call the service to test a single port with device targeting
     const serviceData = { port: portEntity.port };
-    if (targetDeviceId) {
-      serviceData.device_id = targetDeviceId;
-    }
+    const target = targetDeviceId ? { device_id: targetDeviceId } : undefined;
     
-    this._hass.callService("unifi_cable_tester", "run_cable_test", serviceData);
+    this._hass.callService("unifi_cable_tester", "run_cable_test", serviceData, target);
   }
 
   _render() {
@@ -503,7 +497,8 @@ class UnifiCableTesterCard extends HTMLElement {
       for (const port of ports) {
         const color = this._getStatusColor(port.state);
         const isSelected = this._selectedPort === port.entityId;
-        const isTesting = isRunning && port.state === "Testing";
+        // All ports pulse while a test is running
+        const isTesting = isRunning;
         
         // Determine text color based on background brightness
         const textColor = this._getContrastColor(color);
@@ -677,7 +672,6 @@ class UnifiCableTesterCard extends HTMLElement {
 
   _truncateStatus(status) {
     const shortNames = {
-      "Impedance Mismatch": "Impedance",
       "Not Tested": "N/T",
       "Test Failed": "Failed",
     };
