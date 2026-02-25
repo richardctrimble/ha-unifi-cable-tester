@@ -1,5 +1,8 @@
 # UniFi Cable Tester
 
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/custom-components/hacs)
+[![GitHub release](https://img.shields.io/github/release/richardctrimble/ha-unifi-cable-tester.svg)](https://github.com/richardctrimble/ha-unifi-cable-tester/releases/)
+
 A Home Assistant custom integration that runs Ethernet cable diagnostics on UniFi switches via SSH, providing port-by-port cable status with a custom Lovelace card.
 
 ## Features
@@ -73,7 +76,7 @@ show_test_button: true
 compact: false
 ```
 
-## Status Colors
+### Status Colors
 
 | Color  | Status       |
 |--------|--------------|
@@ -84,9 +87,21 @@ compact: false
 | Gray   | Not Tested   |
 | Dark Red | Test Failed |
 
-## License
+## Troubleshooting
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+**Debug logging:**
+
+Add this to your `configuration.yaml`:
+
+```yaml
+logger:
+  logs:
+    custom_components.ha_unifi_cable_tester: debug
+```
+
+## Licence
+
+This project is licensed under the MIT Licence. See the [LICENSE](LICENSE) file for details.
 
 ## Disclaimer
 
