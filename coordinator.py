@@ -52,7 +52,7 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
         self.port_statuses: dict[int, PortStatus] = {}
         self.test_failed_ports: set[int] = set()
         self._test_lock = asyncio.Lock()
-        
+
         # Test run status tracking
         self.test_run_status: str = TEST_RUN_IDLE
         self.test_started: datetime | None = None
@@ -138,7 +138,7 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
             self.test_error_message = None
             self.test_ports_count = 1 if port is not None else self.port_count
             self.async_set_updated_data(dict(self.data or {}))
-            
+
             try:
                 # Run the cable test (CLI mode runs and returns results in one call)
                 results = await self.client.run_cable_test(
@@ -174,10 +174,10 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                 self.test_run_status = TEST_RUN_COMPLETED
                 self.test_completed = datetime.now(timezone.utc)
                 self.test_ports_count = len(results)
-                
+
                 # Push updated data to all entities (including test run status)
                 self.async_set_updated_data(merged)
-                
+
                 _LOGGER.debug(
                     "Cable test complete for %s, %d port results",
                     f"port {port}" if port else "all ports",
@@ -190,19 +190,19 @@ class UniFiCableTesterCoordinator(DataUpdateCoordinator[dict[int, CableTestResul
                 self.test_error_message = "No results returned"
                 self.async_set_updated_data(dict(self.data or {}))
                 raise
-            except (UniFiConnectionError, UniFiCommandError, Exception) as err:
+            except Exception as err:
                 # Mark the tested port(s) as failed and notify entities
                 failed_ports = (
                     {port} if port is not None
                     else set(range(1, self.port_count + 1))
                 )
                 self.test_failed_ports |= failed_ports
-                
+
                 # Update test run status to failed
                 self.test_run_status = TEST_RUN_FAILED
                 self.test_completed = datetime.now(timezone.utc)
                 self.test_error_message = str(err)
-                
+
                 self.async_set_updated_data(dict(self.data or {}))
                 _LOGGER.error("Cable test failed: %s", err)
                 raise UpdateFailed(f"Cable test failed: {err}") from err

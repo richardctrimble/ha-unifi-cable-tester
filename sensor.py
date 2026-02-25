@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     ATTR_ERROR_MESSAGE,
@@ -42,11 +38,9 @@ from .const import (
     STATUS_SHORT,
     STATUS_TEST_FAILED,
     STATUS_UNKNOWN,
-    TEST_RUN_IDLE,
 )
 from .coordinator import UniFiCableTesterCoordinator
-
-_LOGGER = logging.getLogger(__name__)
+from .entity import UniFiCableTesterEntity
 
 
 async def async_setup_entry(
@@ -61,7 +55,7 @@ async def async_setup_entry(
         # Test run status sensor
         UniFiTestRunStatusSensor(coordinator),
     ]
-    
+
     # Per-port cable status sensors
     entities.extend(
         UniFiCableTestSensor(coordinator, port)
@@ -71,9 +65,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
-class UniFiTestRunStatusSensor(
-    CoordinatorEntity[UniFiCableTesterCoordinator], SensorEntity
-):
+class UniFiTestRunStatusSensor(UniFiCableTesterEntity, SensorEntity):
     """Sensor showing the status of the current/last cable test run."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -86,26 +78,6 @@ class UniFiTestRunStatusSensor(
             f"{coordinator.config_entry.entry_id}_test_run_status"
         )
         self._attr_name = "Test Run Status"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info to link this entity to the switch device."""
-        identifiers = {(DOMAIN, self.coordinator.config_entry.entry_id)}
-        connections: set[tuple[str, str]] = set()
-
-        if self.coordinator.switch_info.mac:
-            mac = self.coordinator.switch_info.mac.lower()
-            identifiers.add((DOMAIN, mac))
-            connections.add((dr.CONNECTION_NETWORK_MAC, mac))
-
-        return DeviceInfo(
-            identifiers=identifiers,
-            connections=connections,
-            name=self.coordinator.switch_info.hostname,
-            manufacturer="Ubiquiti",
-            model=self.coordinator.switch_info.model,
-            sw_version=self.coordinator.switch_info.version,
-        )
 
     @property
     def native_value(self) -> str:
@@ -122,7 +94,7 @@ class UniFiTestRunStatusSensor(
 
         if self.coordinator.test_completed:
             attrs[ATTR_TEST_COMPLETED] = self.coordinator.test_completed.isoformat()
-            
+
             # Calculate duration if both timestamps exist
             if self.coordinator.test_started:
                 duration = (
@@ -139,9 +111,7 @@ class UniFiTestRunStatusSensor(
         return attrs
 
 
-class UniFiCableTestSensor(
-    CoordinatorEntity[UniFiCableTesterCoordinator], SensorEntity
-):
+class UniFiCableTestSensor(UniFiCableTesterEntity, SensorEntity):
     """Sensor showing cable test status for a switch port."""
 
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -170,26 +140,6 @@ class UniFiCableTestSensor(
         return "mdi:ethernet-cable"
 
     @property
-    def device_info(self) -> DeviceInfo:
-        """Return device info to link this entity to the switch device."""
-        identifiers = {(DOMAIN, self.coordinator.config_entry.entry_id)}
-        connections: set[tuple[str, str]] = set()
-
-        if self.coordinator.switch_info.mac:
-            mac = self.coordinator.switch_info.mac.lower()
-            identifiers.add((DOMAIN, mac))
-            connections.add((dr.CONNECTION_NETWORK_MAC, mac))
-
-        return DeviceInfo(
-            identifiers=identifiers,
-            connections=connections,
-            name=self.coordinator.switch_info.hostname,
-            manufacturer="Ubiquiti",
-            model=self.coordinator.switch_info.model,
-            sw_version=self.coordinator.switch_info.version,
-        )
-
-    @property
     def native_value(self) -> str:
         """Return the overall cable status for this port."""
         if self._port in self.coordinator.test_failed_ports:
@@ -208,24 +158,24 @@ class UniFiCableTestSensor(
         # Fiber ports return Fiber status for all pairs
         if all(s == STATUS_FIBER for s in statuses):
             return STATUS_FIBER
-        
+
         # Check for problems first (Short/Open are always bad)
         if STATUS_SHORT in statuses:
             return STATUS_SHORT
         if STATUS_OPEN in statuses:
             return STATUS_OPEN
-        
+
         # Filter out "Not Tested" pairs (100Mbps only uses pairs A/B)
         tested_statuses = [s for s in statuses if s != STATUS_NOT_TESTED]
-        
+
         # If we have tested pairs and all are OK, the cable is good
         if tested_statuses and all(s == STATUS_OK for s in tested_statuses):
             return STATUS_OK
-        
+
         # No pairs tested yet
         if not tested_statuses:
             return STATUS_NOT_TESTED
-        
+
         return STATUS_UNKNOWN
 
     @property

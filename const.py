@@ -25,8 +25,9 @@ CMD_CLI_ENTER = "cli"
 CMD_CLI_EXIT = "exit"
 CMD_CABLE_DIAG = "sh cable-diag int gi{port}"
 
-# Cable test wait time (seconds) - reduced since CLI command is synchronous
-CABLE_TEST_WAIT = 2
+# Service constants
+SERVICE_RUN_CABLE_TEST = "run_cable_test"
+ATTR_PORT = "port"
 
 # Sensor attribute keys
 ATTR_PAIR_1_STATUS = "pair_1_status"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 import re
 from typing import Any
@@ -21,6 +20,7 @@ from homeassistant.helpers import (
 )
 
 from .const import (
+    ATTR_PORT,
     CONF_AUTH_METHOD,
     CONF_SSH_KEY_PASSPHRASE,
     CONF_SSH_KEY_PATH,
@@ -28,6 +28,7 @@ from .const import (
     AUTH_METHOD_KEY,
     DOMAIN,
     PLATFORMS,
+    SERVICE_RUN_CABLE_TEST,
 )
 from .coordinator import UniFiCableTesterCoordinator
 from .ssh_client import UniFiSSHClient
@@ -42,10 +43,10 @@ CARD_URL_PATH = f"/{DOMAIN}/{CARD_NAME}"
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the UniFi Cable Tester integration."""
     hass.data.setdefault(DOMAIN, {})
-    
+
     # Register the static path for our custom card
     card_path = Path(__file__).parent / "www" / CARD_NAME
-    
+
     if card_path.exists():
         try:
             await hass.http.async_register_static_paths(
@@ -59,7 +60,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             _LOGGER.warning("Failed to register frontend card: %s", err)
     else:
         _LOGGER.debug("Frontend card not found at %s", card_path)
-    
+
     return True
 
 
@@ -121,9 +122,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     return True
 
-
-SERVICE_RUN_CABLE_TEST = "run_cable_test"
-ATTR_PORT = "port"
 
 SERVICE_SCHEMA = vol.Schema(
     {

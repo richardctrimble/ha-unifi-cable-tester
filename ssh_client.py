@@ -190,10 +190,10 @@ class UniFiSSHClient:
 
     async def run_shell_command(self, command: str, timeout: int = 30) -> str:
         """Execute a command in the UniFi interactive shell.
-        
+
         Some commands like 'info' are only available in the UniFi shell,
         not when running commands directly via SSH.
-        
+
         Note: This creates a separate process/channel, so it doesn't
         interfere with the main SSH connection.
         """
@@ -202,21 +202,21 @@ class UniFiSSHClient:
 
         collected_output = ""
         process = None
-        
+
         try:
             # Don't use async context manager - it hangs on wait_closed()
             process = await self._conn.create_process(
                 term_type="vt100",
                 encoding="utf-8",
             )
-            
+
             # Send the command
             process.stdin.write(f"{command}\n")
             await asyncio.sleep(0.5)
-            
+
             # Read output with timeout
             deadline = asyncio.get_event_loop().time() + timeout
-            
+
             while asyncio.get_event_loop().time() < deadline:
                 try:
                     chunk = await asyncio.wait_for(
@@ -226,14 +226,14 @@ class UniFiSSHClient:
                     if not chunk:
                         break
                     collected_output += chunk
-                    
+
                     # Check if we have the complete info output
                     if command == "info" and "Status:" in collected_output:
                         break
                 except asyncio.TimeoutError:
                     # Got what we need, break out
                     break
-                
+
             return collected_output
 
         except asyncio.TimeoutError as err:
@@ -285,13 +285,13 @@ class UniFiSSHClient:
 
         SSH is already connected. This opens an interactive shell,
         runs 'cli' to enter CLI mode, executes commands, then exits CLI.
-        
-        Sequence: 
+
+        Sequence:
         - cli (enter CLI mode)
         - commands
         - exit (leave first CLI layer - goes to ">" prompt)
         - exit (leave second CLI layer - shows "Terminated", back to shell)
-        
+
         We do NOT send a third exit since that would close the SSH session.
         """
         await self._ensure_connected()
@@ -301,34 +301,34 @@ class UniFiSSHClient:
 
         collected_output = ""
         process = None
-        
+
         try:
             # Don't use async context manager - it hangs on wait_closed()
             process = await self._conn.create_process(
                 term_type="vt100",
                 encoding="utf-8",
             )
-            
+
             # Enter CLI mode
             process.stdin.write(f"{CMD_CLI_ENTER}\n")
             await asyncio.sleep(1.0)  # CLI takes a moment to start
-            
+
             # Run all the cable test commands
             for cmd in commands:
                 process.stdin.write(f"{cmd}\n")
                 await asyncio.sleep(0.5)
-            
+
             # Exit first CLI layer (goes to ">" prompt)
             process.stdin.write(f"{CMD_CLI_EXIT}\n")
             await asyncio.sleep(0.3)
-            
+
             # Exit second CLI layer (shows "Terminated", back at shell)
             process.stdin.write(f"{CMD_CLI_EXIT}\n")
             await asyncio.sleep(0.5)
 
             # Read output with timeout - look for "Terminated" marker
             deadline = asyncio.get_event_loop().time() + timeout
-            
+
             while asyncio.get_event_loop().time() < deadline:
                 try:
                     chunk = await asyncio.wait_for(
@@ -340,7 +340,7 @@ class UniFiSSHClient:
                         break
                     collected_output += chunk
                     _LOGGER.debug("Read chunk: %d bytes", len(chunk))
-                    
+
                     # Stop reading once we see "Terminated"
                     if "Terminated" in collected_output:
                         _LOGGER.debug("Saw 'Terminated', done reading")
@@ -410,14 +410,6 @@ class UniFiSSHClient:
         _LOGGER.debug("Cable test raw output length: %d chars", len(output))
         return self._parse_cable_diag_output(output)
 
-    async def get_cable_test_results(self) -> dict[int, CableTestResult]:
-        """Fetch cable test results (alias for run_cable_test with no port).
-
-        Note: On UniFi switches, the cable test runs when the command is issued,
-        so this effectively runs a test on all ports.
-        """
-        return await self.run_cable_test(port=None)
-
     @staticmethod
     def _parse_port_count(output: str) -> int:
         """Parse swctrl port show output to find number of ports."""
@@ -439,7 +431,7 @@ class UniFiSSHClient:
     def _parse_switch_info(output: str) -> SwitchInfo:
         """Parse info command output for switch details."""
         info = SwitchInfo()
-        
+
         # Clean ANSI escape codes from terminal output
         ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
         output = ansi_escape.sub('', output)
@@ -454,7 +446,7 @@ class UniFiSSHClient:
             line = line.strip()
             if not line:
                 continue
-            
+
             # Skip prompt lines (end with # or >, or are just the command echo)
             if line.endswith("#") or line.endswith(">"):
                 continue
@@ -490,7 +482,7 @@ class UniFiSSHClient:
                         info.mac = normalized.group(0).replace("-", ":").lower()
                     else:
                         info.mac = value
-        
+
         _LOGGER.debug("Parsed switch info: %s", info)
         return info
 
@@ -558,149 +550,6 @@ class UniFiSSHClient:
             )
 
         return statuses
-
-    @staticmethod
-    def _parse_cable_test_output(output: str) -> dict[int, CableTestResult]:
-        """Parse swctrl cable-test show output into structured results.
-
-        The output format varies by firmware but generally looks like:
-
-        Port   Pair(A) Status   Length   Pair(B) Status   Length   ...
-        ----   --------------   ------   --------------   ------   ...
-        1      OK               45m      OK               45m      ...
-        2      Open             15m      Open             15m      ...
-
-        This parser tries multiple strategies to handle format variations.
-        """
-        results: dict[int, CableTestResult] = {}
-        lines = output.strip().splitlines()
-        now = datetime.now(timezone.utc)
-
-        if not lines:
-            return results
-
-        # Strategy 1: find single-line rows that start with a port number
-        # and extract status/length pairs
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Skip header and separator lines
-            lower = line.lower()
-            if line.startswith(("-", "=")):
-                continue
-            if (
-                lower.startswith("port")
-                and "pair" in lower
-                and "status" in lower
-            ):
-                continue
-
-            # Try to parse a data row starting with port number
-            match = re.match(r"^(\d+)\s+(.*)", line)
-            if not match:
-                continue
-
-            port_num = int(match.group(1))
-            rest = match.group(2)
-
-            # Extract all status/length pairs from the rest of the line
-            # Look for patterns like: OK 45m, Open 15m, Short 3m, N/A N/A
-            pair_data = _extract_pairs(rest)
-
-            result = CableTestResult(port=port_num, last_tested=now)
-
-            if len(pair_data) >= 1:
-                result.pair_1_status = pair_data[0][0]
-                result.pair_1_length = pair_data[0][1]
-            if len(pair_data) >= 2:
-                result.pair_2_status = pair_data[1][0]
-                result.pair_2_length = pair_data[1][1]
-            if len(pair_data) >= 3:
-                result.pair_3_status = pair_data[2][0]
-                result.pair_3_length = pair_data[2][1]
-            if len(pair_data) >= 4:
-                result.pair_4_status = pair_data[3][0]
-                result.pair_4_length = pair_data[3][1]
-
-            results[port_num] = result
-
-        # Strategy 2: multiline formats, e.g.:
-        # Port 1
-        # Pair A: OK 12m
-        # Pair B: Open 4m
-        if not results:
-            current_port: int | None = None
-            by_port: dict[int, CableTestResult] = {}
-
-            for raw in lines:
-                line = raw.strip()
-                if not line:
-                    continue
-
-                lower = line.lower()
-
-                port_header = re.search(r"\bport\s*(\d+)\b", lower)
-                if port_header:
-                    current_port = int(port_header.group(1))
-                    by_port.setdefault(
-                        current_port,
-                        CableTestResult(port=current_port, last_tested=now),
-                    )
-                    continue
-
-                bare_port = re.match(r"^(\d+)\s*$", lower)
-                if bare_port:
-                    current_port = int(bare_port.group(1))
-                    by_port.setdefault(
-                        current_port,
-                        CableTestResult(port=current_port, last_tested=now),
-                    )
-                    continue
-
-                if current_port is None:
-                    continue
-
-                pair_label_match = re.search(r"pair\s*([abcd1-4])", lower)
-                pairs = _extract_pairs(line)
-                if not pairs:
-                    continue
-
-                result = by_port[current_port]
-                if pair_label_match:
-                    pair_label = pair_label_match.group(1)
-                    pair_index = {
-                        "a": 1,
-                        "b": 2,
-                        "c": 3,
-                        "d": 4,
-                        "1": 1,
-                        "2": 2,
-                        "3": 3,
-                        "4": 4,
-                    }.get(pair_label)
-                    if pair_index is not None:
-                        _set_pair_result(result, pair_index, pairs[0][0], pairs[0][1])
-                        continue
-
-                # Fallback: append in first available slot when no explicit pair label
-                for status, length in pairs:
-                    if result.pair_1_status == STATUS_NOT_TESTED:
-                        _set_pair_result(result, 1, status, length)
-                    elif result.pair_2_status == STATUS_NOT_TESTED:
-                        _set_pair_result(result, 2, status, length)
-                    elif result.pair_3_status == STATUS_NOT_TESTED:
-                        _set_pair_result(result, 3, status, length)
-                    elif result.pair_4_status == STATUS_NOT_TESTED:
-                        _set_pair_result(result, 4, status, length)
-
-            results = by_port
-
-        if not results:
-            _LOGGER.warning("Could not parse any cable test results from: %s", output)
-
-        return results
 
     @staticmethod
     def _parse_cable_diag_output(output: str) -> dict[int, CableTestResult]:
@@ -816,20 +665,6 @@ def _normalize_cable_status(status: str) -> str:
     return STATUS_UNKNOWN
 
 
-def _normalize_status(status: str) -> str:
-    """Normalize a cable status string."""
-    status = status.strip().lower()
-    if status in ("ok", "normal", "good"):
-        return STATUS_OK
-    if status in ("open", "disconnect", "disconnected"):
-        return STATUS_OPEN
-    if status in ("short",):
-        return STATUS_SHORT
-    if status in ("n/a", "na", "-", ""):
-        return STATUS_NOT_TESTED
-    return STATUS_UNKNOWN
-
-
 def _set_pair_result(
     result: CableTestResult,
     pair_index: int,
@@ -849,60 +684,3 @@ def _set_pair_result(
     elif pair_index == 4:
         result.pair_4_status = status
         result.pair_4_length = length
-
-
-def _parse_length(length_str: str) -> float | None:
-    """Parse a length value like '45m' or '45' into meters."""
-    length_str = length_str.strip().lower()
-    if length_str in ("n/a", "na", "-", ""):
-        return None
-    # Remove unit suffix
-    match = re.match(r"^([\d.]+)\s*m?$", length_str)
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            return None
-    return None
-
-
-def _extract_pairs(text: str) -> list[tuple[str, float | None]]:
-    """Extract status/length pairs from a cable test result line.
-
-    Handles various formats:
-    - "OK 45m OK 45m OK 45m OK 45m"
-    - "OK  45  OK  45  OK  45  OK  45"
-    - "Open 15m Short 3m N/A N/A N/A N/A"
-    """
-    pairs: list[tuple[str, float | None]] = []
-
-    # Split into tokens
-    tokens = text.split()
-    if not tokens:
-        return pairs
-
-    i = 0
-    while i < len(tokens) and len(pairs) < 4:
-        token = tokens[i]
-
-        # Check if this token looks like a status
-        normalized = _normalize_status(token)
-        if normalized != STATUS_UNKNOWN or token.lower() in ("n/a", "na", "-"):
-            status = normalized if normalized != STATUS_UNKNOWN else STATUS_NOT_TESTED
-
-            # Next token might be a length
-            length: float | None = None
-            if i + 1 < len(tokens):
-                candidate = tokens[i + 1]
-                # Check if it's a length value (not another status)
-                if _normalize_status(candidate) == STATUS_UNKNOWN and candidate.lower() not in ("n/a", "na", "-"):
-                    length = _parse_length(candidate)
-                    if length is not None:
-                        i += 1  # consume the length token
-                elif candidate.lower() in ("n/a", "na", "-"):
-                    i += 1  # consume the N/A length
-
-            pairs.append((status, length))
-        i += 1
-
-    return pairs

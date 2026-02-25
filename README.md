@@ -1,44 +1,68 @@
 # UniFi Cable Tester
 
-A Home Assistant integration that tests Ethernet cables on UniFi switches via SSH and displays port-by-port diagnostics.
+A Home Assistant custom integration that runs Ethernet cable diagnostics on UniFi switches via SSH, providing port-by-port cable status with a custom Lovelace card.
+
+## Features
+
+- SSH-based cable diagnostics on UniFi switches (CLI mode `sh cable-diag`)
+- Per-port cable test sensors with pair-level status and length data
+- Support for password and SSH key authentication
+- Custom Lovelace card with interactive color-coded port grid
+- Single port or all-port cable testing from the card UI
+- Real-time test progress indicator with animation
+- Switch device info display (model, hostname, MAC, firmware)
+- Port link status and speed detection (`swctrl port show`)
+- Fiber/SFP port detection
+- Multi-switch support
+
+## Requirements
+
+- Home Assistant 2024.1.0 or newer
+- A UniFi switch accessible via SSH
+- SSH credentials (password or SSH key)
+- [HACS](https://hacs.xyz/) (recommended for installation)
 
 ## Installation
 
 ### HACS (Recommended)
+
 1. Add this repository to HACS as a custom repository
 2. Install "UniFi Cable Tester"
 3. Restart Home Assistant
 
 ### Manual
-Copy the contents to `custom_components/unifi_cable_tester/`
 
-## Setup
+Copy the contents of this repository to `custom_components/unifi_cable_tester/` in your Home Assistant configuration directory.
 
-1. Go to **Settings → Devices & Services → Add Integration**
-2. Search for "UniFi Cable Tester"
-3. Enter your switch IP, username, and password (or SSH key)
+## Configuration
+
+1. Go to **Settings > Devices & Services > Add Integration**
+2. Search for **UniFi Cable Tester**
+3. Enter your switch IP address, SSH port, and authentication method
+4. Provide your credentials (password or SSH key path)
+5. The integration will validate the connection and discover switch ports
 
 ## Dashboard Card
 
 ### Add the Resource
-1. Go to **Settings → Dashboards**
-2. Click **⋮** (three dots) → **Resources**
+
+1. Go to **Settings > Dashboards**
+2. Click the three-dot menu > **Resources**
 3. Click **Add Resource**
-4. Enter:
-   - **URL:** `/unifi_cable_tester/unifi-cable-tester-card.js`
-   - **Type:** JavaScript Module
-5. Click **Create**
+4. Enter URL: `/unifi_cable_tester/unifi-cable-tester-card.js`
+5. Set type to **JavaScript Module**
+6. Click **Create**
 
 ### Add the Card
+
 1. Edit your dashboard
 2. Click **Add Card**
-3. Search for **"UniFi Cable Tester"**
-4. Select your switch from the dropdown (auto-detected)
-5. Adjust columns to match your switch's port layout
-
-That's it! The card automatically detects your configured switches.
+3. Search for **UniFi Cable Tester**
+4. Select your switch from the dropdown
+5. Adjust columns to match your switch port layout
 
 ### Manual YAML
+
 ```yaml
 type: custom:unifi-cable-tester-card
 title: Switch Cable Status
@@ -49,20 +73,21 @@ show_test_button: true
 compact: false
 ```
 
-## Card Features
-
-- Visual port grid with color-coded status
-- Click a port to see pair details (length, status)
-- Test All Cables button
-- Test single port button
-- Real-time test progress indicator
-
 ## Status Colors
 
-| Color | Status |
-|-------|--------|
-| 🟢 Green | OK |
-| 🔴 Red | Open |
-| 🟠 Orange | Short / Impedance |
-| 🔵 Blue | Fiber |
-| ⚫ Gray | Not Tested |
+| Color  | Status       |
+|--------|--------------|
+| Green  | OK           |
+| Red    | Open         |
+| Orange | Short        |
+| Blue   | Fiber        |
+| Gray   | Not Tested   |
+| Dark Red | Test Failed |
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+## Disclaimer
+
+This integration is not affiliated with or endorsed by Ubiquiti Inc. Use at your own risk. Cable diagnostics may briefly interrupt port connectivity during testing.
