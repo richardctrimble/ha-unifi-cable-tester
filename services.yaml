@@ -3,7 +3,7 @@ run_cable_test:
   description: Run a cable test on a UniFi switch port.
   target:
     device:
-      integration: unifi_cable_tester
+      integration: ha_unifi_cable_tester
   fields:
     port:
       name: Port

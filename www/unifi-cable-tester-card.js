@@ -168,7 +168,7 @@ class UnifiCableTesterCard extends HTMLElement {
       serviceData.device_id = entityEntry.device_id;
     }
     
-    this._hass.callService("unifi_cable_tester", "run_cable_test", serviceData);
+    this._hass.callService("ha_unifi_cable_tester", "run_cable_test", serviceData);
   }
 
   _render() {
@@ -762,7 +762,7 @@ class UnifiCableTesterCardEditor extends HTMLElement {
     if (this._hass.entities && this._hass.devices) {
       for (const [entityId, entry] of Object.entries(this._hass.entities)) {
         if (!entityId.startsWith("sensor.")) continue;
-        if (!entry.platform || entry.platform !== "unifi_cable_tester") continue;
+        if (!entry.platform || entry.platform !== "ha_unifi_cable_tester") continue;
         if (!entityId.includes("cable_status") || !entityId.includes("port_")) continue;
         if (!entry.device_id) continue;
 
@@ -986,7 +986,7 @@ window.customCards.push({
   name: "UniFi Cable Tester",
   description: "Visual display of UniFi switch cable test results",
   preview: true,
-  documentationURL: "https://github.com/richardctrimble/ha-unificablestatus",
+  documentationURL: "https://github.com/richardctrimble/ha-unifi-cable-tester",
 });
 
 console.info(

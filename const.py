@@ -1,6 +1,6 @@
 """Constants for the UniFi Cable Tester integration."""
 
-DOMAIN = "unifi_cable_tester"
+DOMAIN = "ha_unifi_cable_tester"
 
 # Config keys
 CONF_AUTH_METHOD = "auth_method"

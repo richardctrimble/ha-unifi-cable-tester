@@ -32,7 +32,7 @@ A Home Assistant custom integration that runs Ethernet cable diagnostics on UniF
 
 ### Manual
 
-Copy the contents of this repository to `custom_components/unifi_cable_tester/` in your Home Assistant configuration directory.
+Copy the contents of this repository to `custom_components/ha_unifi_cable_tester/` in your Home Assistant configuration directory.
 
 ## Configuration
 
@@ -49,7 +49,7 @@ Copy the contents of this repository to `custom_components/unifi_cable_tester/` 
 1. Go to **Settings > Dashboards**
 2. Click the three-dot menu > **Resources**
 3. Click **Add Resource**
-4. Enter URL: `/unifi_cable_tester/unifi-cable-tester-card.js`
+4. Enter URL: `/ha_unifi_cable_tester/unifi-cable-tester-card.js`
 5. Set type to **JavaScript Module**
 6. Click **Create**
 
