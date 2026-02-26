@@ -1,14 +1,18 @@
 {
   "domain": "ha_unifi_cable_tester",
   "name": "UniFi Cable Tester",
-  "codeowners": ["@richardctrimble"],
+  "codeowners": [
+    "@richardctrimble"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/richardctrimble/ha-unifi-cable-tester",
   "issue_tracker": "https://github.com/richardctrimble/ha-unifi-cable-tester/issues",
   "integration_type": "hub",
   "iot_class": "local_polling",
-  "requirements": ["asyncssh>=2.14.0"],
-  "version": "1.1.0",
+  "requirements": [
+    "asyncssh>=2.14.0"
+  ],
+  "version": "2026.3.0",
   "brand": "ubiquiti"
 }
